@@ -28,6 +28,16 @@ class SecureDeviceStorage(context: Context) {
 
     fun saveFallbackUuid(uuid: String) = writeEncrypted(KEY_FALLBACK_UUID, uuid)
     fun readFallbackUuid(): String? = readEncrypted(KEY_FALLBACK_UUID)
+    fun markWelcomeCompleted() = preferences.edit().putBoolean(KEY_WELCOME_COMPLETED, true).apply()
+    fun isWelcomeCompleted(): Boolean = preferences.getBoolean(KEY_WELCOME_COMPLETED, false)
+    fun savePendingTextMessages(json: String) = writeEncrypted(KEY_PENDING_TEXT_MESSAGES, json)
+    fun readPendingTextMessages(): String? = readEncrypted(KEY_PENDING_TEXT_MESSAGES)
+    fun savePendingStaticLocations(json: String) = writeEncrypted(KEY_PENDING_STATIC_LOCATIONS, json)
+    fun readPendingStaticLocations(): String? = readEncrypted(KEY_PENDING_STATIC_LOCATIONS)
+    fun savePendingMediaMessages(json: String) = writeEncrypted(KEY_PENDING_MEDIA_MESSAGES, json)
+    fun readPendingMediaMessages(): String? = readEncrypted(KEY_PENDING_MEDIA_MESSAGES)
+    fun savePushToken(token: String) = writeEncrypted(KEY_PUSH_TOKEN, token)
+    fun readPushToken(): String? = readEncrypted(KEY_PUSH_TOKEN)
 
     private fun writeEncrypted(key: String, value: String) {
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {
@@ -77,6 +87,11 @@ class SecureDeviceStorage(context: Context) {
         const val KEY_DEVICE_ID = "device_id"
         const val KEY_ACCESS_TOKEN = "access_token"
         const val KEY_FALLBACK_UUID = "fallback_uuid"
+        const val KEY_WELCOME_COMPLETED = "welcome_completed"
+        const val KEY_PENDING_TEXT_MESSAGES = "pending_text_messages"
+        const val KEY_PENDING_STATIC_LOCATIONS = "pending_static_locations"
+        const val KEY_PENDING_MEDIA_MESSAGES = "pending_media_messages"
+        const val KEY_PUSH_TOKEN = "push_token"
         const val KEY_ALIAS = "eyewitness_device_key"
         const val ANDROID_KEY_STORE = "AndroidKeyStore"
         const val TRANSFORMATION = "AES/GCM/NoPadding"

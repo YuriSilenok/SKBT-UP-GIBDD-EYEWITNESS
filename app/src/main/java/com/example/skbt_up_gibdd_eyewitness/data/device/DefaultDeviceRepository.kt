@@ -6,6 +6,8 @@ import com.example.skbt_up_gibdd_eyewitness.core.network.RegisterDeviceRequest
 import com.example.skbt_up_gibdd_eyewitness.core.storage.SecureDeviceStorage
 import com.example.skbt_up_gibdd_eyewitness.domain.device.DeviceRepository
 import com.example.skbt_up_gibdd_eyewitness.domain.device.DeviceSession
+import com.example.skbt_up_gibdd_eyewitness.domain.device.ActiveBan
+import java.time.Instant
 
 class DefaultDeviceRepository(
     private val api: DeviceApi,
@@ -26,4 +28,19 @@ class DefaultDeviceRepository(
     }
 
     override fun savedSession(): DeviceSession? = storage.readSession()
+    override fun isWelcomeCompleted(): Boolean = storage.isWelcomeCompleted()
+    override fun markWelcomeCompleted() = storage.markWelcomeCompleted()
+
+    override suspend fun getActiveBan(): Result<ActiveBan?> = runCatching {
+        api.getActiveBan().ban
+            ?.takeIf { it.isActive }
+            ?.let { ban ->
+                ActiveBan(
+                    id = ban.banId,
+                    startedAt = Instant.parse(ban.startedAt),
+                    endsAt = ban.endsAt?.let(Instant::parse),
+                    number = ban.banNumber,
+                )
+            }
+    }
 }
