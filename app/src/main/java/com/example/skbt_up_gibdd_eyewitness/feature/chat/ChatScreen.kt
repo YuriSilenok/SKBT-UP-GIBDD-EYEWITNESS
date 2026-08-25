@@ -11,6 +11,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.KeyboardOptions
@@ -29,6 +34,7 @@ import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -51,7 +57,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import coil.compose.AsyncImage
+import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
+import coil.request.videoFrameMillis
 import com.example.skbt_up_gibdd_eyewitness.R
 import com.example.skbt_up_gibdd_eyewitness.feature.chat.media.MediaAttachment
 import com.example.skbt_up_gibdd_eyewitness.feature.chat.media.MediaKind
@@ -69,6 +77,15 @@ import com.example.skbt_up_gibdd_eyewitness.feature.location.hasLocationPermissi
 import com.example.skbt_up_gibdd_eyewitness.feature.location.liveLocationPermissions
 import com.example.skbt_up_gibdd_eyewitness.domain.message.ChatMessage
 import com.example.skbt_up_gibdd_eyewitness.domain.message.MessageRepository
+import com.example.skbt_up_gibdd_eyewitness.domain.message.PendingMessageEvent
+import com.example.skbt_up_gibdd_eyewitness.domain.message.PendingMessageKind
+import com.example.skbt_up_gibdd_eyewitness.domain.message.PendingMessageStatus
+import com.example.skbt_up_gibdd_eyewitness.domain.device.ActiveBan
+import com.example.skbt_up_gibdd_eyewitness.domain.device.DeviceRepository
+import com.example.skbt_up_gibdd_eyewitness.domain.realtime.RealtimeConnectionState
+import com.example.skbt_up_gibdd_eyewitness.domain.realtime.RealtimeRepository
+import com.example.skbt_up_gibdd_eyewitness.feature.ban.BanCheckScreen
+import com.example.skbt_up_gibdd_eyewitness.feature.ban.BanScreen
 import com.example.skbt_up_gibdd_eyewitness.ui.components.AppTopBar
 import com.example.skbt_up_gibdd_eyewitness.ui.theme.IncomingBubble
 import com.example.skbt_up_gibdd_eyewitness.ui.theme.OutgoingBubble
@@ -80,11 +97,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlin.coroutines.resume
 import java.time.LocalTime
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
+import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
@@ -97,12 +118,16 @@ private data class PreviewMessage(
     val outgoing: Boolean,
     val delivered: Boolean = true,
     val createdAt: String,
+    val pendingId: String? = null,
+    val pendingStatus: PendingMessageStatus? = null,
 )
 private data class StaticLocationMessage(
     val id: String,
     val location: StaticLocation,
     val createdAt: String,
     val delivered: Boolean,
+    val pendingId: String? = null,
+    val pendingStatus: PendingMessageStatus? = null,
 )
 private data class MediaMessage(
     val id: String,
@@ -112,6 +137,8 @@ private data class MediaMessage(
     val accessToken: String? = null,
     val createdAt: String,
     val delivered: Boolean,
+    val pendingId: String? = null,
+    val pendingStatus: PendingMessageStatus? = null,
 )
 private sealed interface ChatTimelineItem {
     val id: String
@@ -134,6 +161,12 @@ private sealed interface ChatTimelineItem {
 }
 private enum class AttachmentTab { GALLERY, LOCATION }
 private enum class LocationPermissionAction { CURRENT, LIVE }
+private sealed interface BanUiState {
+    data object Loading : BanUiState
+    data object NotBanned : BanUiState
+    data object Error : BanUiState
+    data class Banned(val ban: ActiveBan) : BanUiState
+}
 private const val SUCCESS_TOAST_TEXT = "Спасибо за обращение. Мы его уже передали инспекторам."
 
 private val previewMessages = listOf(
@@ -147,22 +180,52 @@ private val previewMessages = listOf(
 fun ChatScreen(
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
+    deviceRepository: DeviceRepository? = null,
     messageRepository: MessageRepository? = null,
+    realtimeRepository: RealtimeRepository? = null,
     selectedStaticLocation: StaticLocation? = null,
     onStaticLocationConsumed: () -> Unit = {},
     onOpenStaticLocationPicker: () -> Unit = {},
+    requestNotificationPermission: Boolean = true,
+    requestGalleryPermission: Boolean = true,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(Unit) {
+        if (
+            requestNotificationPermission &&
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.POST_NOTIFICATIONS,
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
     val attachmentSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var draft by remember { mutableStateOf("") }
     var showAttachmentSheet by remember { mutableStateOf(false) }
+    var attachmentSuggestionShown by rememberSaveable { mutableStateOf(false) }
+    var showAttachmentSuggestion by rememberSaveable { mutableStateOf(false) }
+    var attachmentInitialTab by remember { mutableStateOf(AttachmentTab.GALLERY) }
     var pendingSelection by remember { mutableStateOf<List<MediaAttachment>>(emptyList()) }
     var pendingCaptureUri by remember { mutableStateOf<android.net.Uri?>(null) }
     var recentPhotoUris by remember { mutableStateOf<List<android.net.Uri>>(emptyList()) }
     var galleryAccessGranted by remember { mutableStateOf(hasGalleryPermission(context)) }
     var locationPermissionAction by remember { mutableStateOf(LocationPermissionAction.LIVE) }
     val liveLocationState by LiveLocationTracker.state.collectAsState()
+    val previewConnectionState = remember { MutableStateFlow(RealtimeConnectionState.CONNECTED) }
+    val realtimeConnectionState by (realtimeRepository?.connectionState ?: previewConnectionState).collectAsState()
+    val emptyPendingMessages = remember { MutableStateFlow(emptyList<com.example.skbt_up_gibdd_eyewitness.domain.message.PendingTextMessage>()) }
+    val pendingTextMessages by (messageRepository?.pendingTextMessages ?: emptyPendingMessages).collectAsState()
+    val emptyPendingLocations = remember { MutableStateFlow(emptyList<com.example.skbt_up_gibdd_eyewitness.domain.message.PendingStaticLocation>()) }
+    val pendingStaticLocations by (messageRepository?.pendingStaticLocations ?: emptyPendingLocations).collectAsState()
+    val emptyPendingMedia = remember { MutableStateFlow(emptyList<com.example.skbt_up_gibdd_eyewitness.domain.message.PendingMediaMessage>()) }
+    val pendingMediaMessages by (messageRepository?.pendingMediaMessages ?: emptyPendingMedia).collectAsState()
+    val emptyCachedMessages = remember { MutableStateFlow(emptyList<ChatMessage>()) }
+    val cachedMessages by (messageRepository?.cachedMessages ?: emptyCachedMessages).collectAsState(initial = emptyList())
     val textMessages = remember(messageRepository) {
         mutableStateListOf<PreviewMessage>().apply {
             if (messageRepository == null) addAll(previewMessages)
@@ -170,11 +233,53 @@ fun ChatScreen(
     }
     val localMediaMessages = remember { mutableStateListOf<MediaMessage>() }
     val staticLocationMessages = remember { mutableStateListOf<StaticLocationMessage>() }
+    val confirmedPendingIds = remember { mutableStateListOf<String>() }
     val listState = rememberLazyListState()
     var isSending by remember { mutableStateOf(false) }
+    var banUiState by remember(deviceRepository) {
+        mutableStateOf<BanUiState>(if (deviceRepository == null) BanUiState.NotBanned else BanUiState.Loading)
+    }
+    var banCheckAttempt by remember { mutableIntStateOf(0) }
+    var historyClearedForCurrentBan by remember { mutableStateOf(false) }
+    fun mergeConfirmedMessages(messages: List<ChatMessage>) {
+        val repository = messageRepository ?: return
+        val deviceId = repository.currentDeviceId()
+        val textUpdates = messages.filter { it.type.isTextMessageType() }.map { it.toPreview(deviceId) }
+        textMessages.removeAll { current -> textUpdates.any { it.id == current.id } }
+        textMessages.addAll(textUpdates)
+
+        val locationUpdates = messages.mapNotNull { message ->
+                val latitude = message.staticLatitude ?: return@mapNotNull null
+                val longitude = message.staticLongitude ?: return@mapNotNull null
+                StaticLocationMessage(
+                    message.id,
+                    StaticLocation(latitude, longitude),
+                    message.createdAt,
+                    message.deliveredAt != null,
+                )
+            }
+        staticLocationMessages.removeAll { current -> locationUpdates.any { it.id == current.id } }
+        staticLocationMessages.addAll(locationUpdates)
+
+        val mediaUpdates = messages.mapNotNull { message ->
+                val mimeType = message.mediaMimeType ?: return@mapNotNull null
+                MediaMessage(
+                    id = message.id,
+                    mimeType = mimeType,
+                    remoteUrl = repository.mediaDownloadUrl(message.mediaStorageKey ?: message.id),
+                    accessToken = repository.currentAccessToken(),
+                    createdAt = message.createdAt,
+                    delivered = message.deliveredAt != null,
+                )
+            }
+        localMediaMessages.removeAll { current -> mediaUpdates.any { it.id == current.id } }
+        localMediaMessages.addAll(mediaUpdates)
+    }
+    LaunchedEffect(cachedMessages) {
+        mergeConfirmedMessages(cachedMessages)
+    }
     val submitStaticLocation: suspend (StaticLocation) -> Unit = { location ->
-        val result = messageRepository?.sendStaticLocation(location.latitude, location.longitude)
-        if (result == null) {
+        if (messageRepository == null) {
             staticLocationMessages += StaticLocationMessage(
                 "local-${System.currentTimeMillis()}",
                 location,
@@ -182,13 +287,8 @@ fun ChatScreen(
                 false,
             )
             Toast.makeText(context, "Геолокация отправлена", Toast.LENGTH_SHORT).show()
-        } else if (result.isSuccess) {
-            val message = result.getOrThrow()
-            staticLocationMessages.removeAll { it.id == message.id }
-            staticLocationMessages += StaticLocationMessage(message.id, location, message.createdAt, message.deliveredAt != null)
-            Toast.makeText(context, SUCCESS_TOAST_TEXT, Toast.LENGTH_LONG).show()
         } else {
-            Toast.makeText(context, "Не удалось отправить геолокацию", Toast.LENGTH_LONG).show()
+            messageRepository.enqueueStaticLocation(location.latitude, location.longitude)
         }
     }
     val sendTextMessage: () -> Unit = {
@@ -198,7 +298,7 @@ fun ChatScreen(
                 textMessages += PreviewMessage(
                     id = "local-${System.currentTimeMillis()}",
                     text = text,
-                    time = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm")),
+                    time = LocalTime.now(MOSCOW_ZONE).format(DateTimeFormatter.ofPattern("HH:mm")),
                     outgoing = true,
                     delivered = false,
                     createdAt = OffsetDateTime.now().toString(),
@@ -206,20 +306,8 @@ fun ChatScreen(
                 draft = ""
                 Toast.makeText(context, "Сообщение отправлено", Toast.LENGTH_SHORT).show()
             } else {
-                scope.launch {
-                    isSending = true
-                    messageRepository.sendText(text)
-                        .onSuccess { message ->
-                            textMessages.removeAll { it.id == message.id }
-                            textMessages += message.toPreview(messageRepository.currentDeviceId())
-                            draft = ""
-                            Toast.makeText(context, SUCCESS_TOAST_TEXT, Toast.LENGTH_LONG).show()
-                        }
-                        .onFailure {
-                            Toast.makeText(context, "Не удалось отправить сообщение", Toast.LENGTH_SHORT).show()
-                        }
-                    isSending = false
-                }
+                messageRepository.enqueueText(text)
+                draft = ""
             }
         }
     }
@@ -265,46 +353,163 @@ fun ChatScreen(
         pendingCaptureUri = null
     }
 
-    LaunchedEffect(messageRepository) {
+    LaunchedEffect(deviceRepository, messageRepository, realtimeRepository, banCheckAttempt) {
         val repository = messageRepository ?: return@LaunchedEffect
-        while (isActive) {
+        suspend fun refreshBan() {
+            val banRepository = deviceRepository ?: return
+            banRepository.getActiveBan()
+                .onSuccess { ban ->
+                    if (ban != null && !historyClearedForCurrentBan) {
+                        repository.clearLocalHistory()
+                        textMessages.clear()
+                        localMediaMessages.clear()
+                        staticLocationMessages.clear()
+                        confirmedPendingIds.clear()
+                        historyClearedForCurrentBan = true
+                    } else if (ban == null) {
+                        historyClearedForCurrentBan = false
+                    }
+                    banUiState = ban?.let(BanUiState::Banned) ?: BanUiState.NotBanned
+                }
+                .onFailure {
+                    if (banUiState is BanUiState.Loading) banUiState = BanUiState.Error
+                }
+        }
+        suspend fun refreshMessages() {
             repository.getOwnMessages().onSuccess { messages ->
                 val deviceId = repository.currentDeviceId()
-                textMessages.clear()
-                textMessages.addAll(messages.filter { it.type == "TEXT" }.map { it.toPreview(deviceId) })
-                staticLocationMessages.clear()
-                staticLocationMessages.addAll(
-                    messages.mapNotNull { message ->
-                        val latitude = message.staticLatitude ?: return@mapNotNull null
-                        val longitude = message.staticLongitude ?: return@mapNotNull null
-                        StaticLocationMessage(
-                            message.id,
-                            StaticLocation(latitude, longitude),
-                            message.createdAt,
-                            message.deliveredAt != null,
-                        )
-                    },
-                )
-                localMediaMessages.clear()
-                localMediaMessages.addAll(
-                    messages.mapNotNull { message ->
-                        val mimeType = message.mediaMimeType ?: return@mapNotNull null
-                        MediaMessage(
-                            id = message.id,
-                            mimeType = mimeType,
-                            remoteUrl = repository.mediaDownloadUrl(message.id),
-                            accessToken = repository.currentAccessToken(),
-                            createdAt = message.createdAt,
-                            delivered = message.deliveredAt != null,
-                        )
-                    },
-                )
                 messages
                     .filter { it.senderDeviceId != deviceId && it.deliveredAt == null }
                     .forEach { repository.markDelivered(it.id) }
             }
-            delay(5_000)
         }
+
+        coroutineScope {
+            val realtimeEventsJob = realtimeRepository?.let { realtime ->
+                launch {
+                    var firstConnectionEvent = true
+                    realtime.events.collect { event ->
+                        if (event.name == "connected") {
+                            if (firstConnectionEvent) {
+                                firstConnectionEvent = false
+                                return@collect
+                            }
+                            refreshBan()
+                            if (banUiState !is BanUiState.Banned) refreshMessages()
+                            return@collect
+                        }
+                        if (event.name == "observer_banned") refreshBan()
+                        if (
+                            event.name != "live_location_point" &&
+                            event.name != "location.point" &&
+                            banUiState !is BanUiState.Banned
+                        ) {
+                            refreshMessages()
+                        }
+                    }
+                }
+            }
+            realtimeRepository?.start()
+            try {
+                while (isActive) {
+                    refreshBan()
+                    if (banUiState !is BanUiState.Banned) refreshMessages()
+                    val pollingDelay = if (
+                        realtimeRepository?.connectionState?.value == RealtimeConnectionState.CONNECTED
+                    ) {
+                        30_000L
+                    } else {
+                        5_000L
+                    }
+                    delay(pollingDelay)
+                }
+            } finally {
+                realtimeEventsJob?.cancel()
+                realtimeRepository?.stop()
+            }
+        }
+    }
+
+    LaunchedEffect(messageRepository) {
+        val repository = messageRepository ?: return@LaunchedEffect
+        repository.pendingMessageEvents.collect { event ->
+            when (event) {
+                is PendingMessageEvent.Sent -> {
+                    if (event.localId !in confirmedPendingIds) confirmedPendingIds += event.localId
+                    val message = event.message
+                    when (event.kind) {
+                        PendingMessageKind.TEXT -> {
+                            textMessages.removeAll { it.id == message.id }
+                            textMessages += message.toPreview(repository.currentDeviceId())
+                            if (!attachmentSuggestionShown) {
+                                attachmentSuggestionShown = true
+                                showAttachmentSuggestion = true
+                            }
+                        }
+                        PendingMessageKind.STATIC_LOCATION -> {
+                            val latitude = message.staticLatitude
+                            val longitude = message.staticLongitude
+                            if (latitude != null && longitude != null) {
+                                staticLocationMessages.removeAll { it.id == message.id }
+                                staticLocationMessages += StaticLocationMessage(
+                                    id = message.id,
+                                    location = StaticLocation(latitude, longitude),
+                                    createdAt = message.createdAt,
+                                    delivered = message.deliveredAt != null,
+                                )
+                            }
+                        }
+                        PendingMessageKind.MEDIA -> {
+                            val mimeType = message.mediaMimeType
+                            if (mimeType != null) {
+                                localMediaMessages.removeAll { it.id == message.id }
+                                localMediaMessages += MediaMessage(
+                                    id = message.id,
+                                    mimeType = mimeType,
+                                    remoteUrl = repository.mediaDownloadUrl(message.mediaStorageKey ?: message.id),
+                                    accessToken = repository.currentAccessToken(),
+                                    createdAt = message.createdAt,
+                                    delivered = message.deliveredAt != null,
+                                )
+                            }
+                        }
+                    }
+                    Toast.makeText(context, SUCCESS_TOAST_TEXT, Toast.LENGTH_LONG).show()
+                }
+                is PendingMessageEvent.Failed -> Toast.makeText(
+                    context,
+                    "Сообщение сохранено. Нажмите «Повторить отправку».",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+    }
+
+    LaunchedEffect(banUiState) {
+        if (banUiState is BanUiState.Banned) LiveLocationService.stop(context)
+    }
+
+    when (val state = banUiState) {
+        BanUiState.Loading -> {
+            BanCheckScreen(onBackClick, error = false, onRetry = {})
+            return
+        }
+        BanUiState.Error -> {
+            BanCheckScreen(
+                onBackClick = onBackClick,
+                error = true,
+                onRetry = {
+                    banUiState = BanUiState.Loading
+                    banCheckAttempt++
+                },
+            )
+            return
+        }
+        is BanUiState.Banned -> {
+            BanScreen(state.ban, onBackClick)
+            return
+        }
+        BanUiState.NotBanned -> Unit
     }
 
     LaunchedEffect(selectedStaticLocation) {
@@ -321,15 +526,71 @@ fun ChatScreen(
 
     val timelineItems = buildList<ChatTimelineItem> {
         textMessages.forEach { add(ChatTimelineItem.Text(it)) }
+        pendingTextMessages.filterNot { it.localId in confirmedPendingIds }.forEach { pending ->
+            add(
+                ChatTimelineItem.Text(
+                    PreviewMessage(
+                        id = "pending-${pending.localId}",
+                        text = pending.text,
+                        time = pending.createdAt.toMessageTime(),
+                        outgoing = true,
+                        delivered = false,
+                        createdAt = pending.createdAt,
+                        pendingId = pending.localId,
+                        pendingStatus = pending.status,
+                    ),
+                ),
+            )
+        }
         localMediaMessages.forEach { add(ChatTimelineItem.Media(it)) }
+        pendingMediaMessages.filterNot { it.localId in confirmedPendingIds }.forEach { pending ->
+            val kind = when {
+                pending.mimeType == "image/gif" -> MediaKind.GIF
+                pending.mimeType.startsWith("video/") -> MediaKind.VIDEO
+                else -> MediaKind.PHOTO
+            }
+            add(
+                ChatTimelineItem.Media(
+                    MediaMessage(
+                        id = "pending-${pending.localId}",
+                        attachment = MediaAttachment(
+                            id = pending.localId,
+                            uri = android.net.Uri.fromFile(java.io.File(pending.localPath)),
+                            mimeType = pending.mimeType,
+                            sizeBytes = pending.sizeBytes,
+                            kind = kind,
+                        ),
+                        mimeType = pending.mimeType,
+                        createdAt = pending.createdAt,
+                        delivered = false,
+                        pendingId = pending.localId,
+                        pendingStatus = pending.status,
+                    ),
+                ),
+            )
+        }
         staticLocationMessages.forEach { add(ChatTimelineItem.StaticLocation(it)) }
+        pendingStaticLocations.filterNot { it.localId in confirmedPendingIds }.forEach { pending ->
+            add(
+                ChatTimelineItem.StaticLocation(
+                    StaticLocationMessage(
+                        id = "pending-${pending.localId}",
+                        location = StaticLocation(pending.latitude, pending.longitude),
+                        createdAt = pending.createdAt,
+                        delivered = false,
+                        pendingId = pending.localId,
+                        pendingStatus = pending.status,
+                    ),
+                ),
+            )
+        }
     }.sortedBy { it.createdAt.toTimelineMillis() }
 
-    LaunchedEffect(timelineItems.size, liveLocationState) {
+    LaunchedEffect(timelineItems.lastOrNull()?.id, liveLocationState) {
         val timelineDates = timelineItems.map { it.createdAt.toMessageDate() }.distinct()
         val activeLive = liveLocationState as? LiveLocationState.Active
         val liveDate = activeLive?.let {
-            java.time.Instant.ofEpochMilli(it.startedAtMillis).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+            java.time.Instant.ofEpochMilli(it.startedAtMillis).atZone(MOSCOW_ZONE).toLocalDate()
         }
         val liveItemCount = if (activeLive == null) 0 else 1
         val liveHeaderCount = if (liveDate != null && liveDate != timelineDates.lastOrNull()) 1 else 0
@@ -337,8 +598,18 @@ fun ChatScreen(
         if (itemCount > 0) listState.animateScrollToItem(itemCount - 1)
     }
 
+    LaunchedEffect(listState, messageRepository) {
+        val repository = messageRepository ?: return@LaunchedEffect
+        snapshotFlow { listState.isScrollInProgress && listState.firstVisibleItemIndex == 0 }
+            .distinctUntilChanged()
+            .collect { reachedTop ->
+                if (reachedTop) repository.loadOlderMessages()
+            }
+    }
+
     Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).imePadding()) {
         AppTopBar(onBackClick)
+        ConnectionStatusBar(realtimeConnectionState.toConnectionStatus())
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -354,15 +625,24 @@ fun ChatScreen(
                 }
                 item(key = timelineItem.id) {
                     when (timelineItem) {
-                        is ChatTimelineItem.Text -> MessageBubble(timelineItem.message)
-                        is ChatTimelineItem.Media -> MediaBubble(timelineItem.message)
-                        is ChatTimelineItem.StaticLocation -> StaticLocationBubble(timelineItem.message)
+                        is ChatTimelineItem.Text -> MessageBubble(
+                            timelineItem.message,
+                            onRetry = { pendingId -> messageRepository?.retryPendingText(pendingId) },
+                        )
+                        is ChatTimelineItem.Media -> MediaBubble(
+                            timelineItem.message,
+                            onRetry = { pendingId -> messageRepository?.retryPendingMedia(pendingId) },
+                        )
+                        is ChatTimelineItem.StaticLocation -> StaticLocationBubble(
+                            timelineItem.message,
+                            onRetry = { pendingId -> messageRepository?.retryPendingStaticLocation(pendingId) },
+                        )
                     }
                 }
             }
             (liveLocationState as? LiveLocationState.Active)?.let { active ->
                 val liveDate = java.time.Instant.ofEpochMilli(active.startedAtMillis)
-                    .atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+                    .atZone(MOSCOW_ZONE).toLocalDate()
                 if (liveDate != previousDate) {
                     item(key = "date-live-$liveDate") { DateSeparator(liveDate) }
                 }
@@ -374,6 +654,28 @@ fun ChatScreen(
                 }
             }
         }
+        AnimatedVisibility(
+            visible = showAttachmentSuggestion,
+            enter = expandVertically() + fadeIn(),
+            exit = shrinkVertically() + fadeOut(),
+        ) {
+            AttachmentSuggestion(
+                onDismiss = { showAttachmentSuggestion = false },
+                onMedia = {
+                    showAttachmentSuggestion = false
+                    attachmentInitialTab = AttachmentTab.GALLERY
+                    showAttachmentSheet = true
+                    galleryAccessGranted = hasGalleryPermission(context)
+                    if (galleryAccessGranted) refreshRecentPhotos()
+                    else if (requestGalleryPermission) galleryPermissionLauncher.launch(galleryPermissions())
+                },
+                onLocation = {
+                    showAttachmentSuggestion = false
+                    attachmentInitialTab = AttachmentTab.LOCATION
+                    showAttachmentSheet = true
+                },
+            )
+        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -384,11 +686,12 @@ fun ChatScreen(
         ) {
             IconButton(
                 onClick = {
+                    attachmentInitialTab = AttachmentTab.GALLERY
                     showAttachmentSheet = true
                     galleryAccessGranted = hasGalleryPermission(context)
                     if (galleryAccessGranted) {
                         refreshRecentPhotos()
-                    } else {
+                    } else if (requestGalleryPermission) {
                         galleryPermissionLauncher.launch(galleryPermissions())
                     }
                 },
@@ -432,6 +735,7 @@ fun ChatScreen(
             containerColor = Color.White,
         ) {
             AttachmentSheet(
+                initialTab = attachmentInitialTab,
                 media = pendingSelection,
                 recentPhotoUris = recentPhotoUris,
                 galleryAccessGranted = galleryAccessGranted,
@@ -466,14 +770,9 @@ fun ChatScreen(
                     pendingSelection = emptyList()
                     showAttachmentSheet = false
                     scope.launch {
-                        var sentCount = 0
+                        var queuedCount = 0
                         attachments.forEach { attachment ->
-                            val result = messageRepository?.uploadMedia(
-                                attachment.uri,
-                                attachment.mimeType,
-                                attachment.sizeBytes,
-                            )
-                            if (result == null) {
+                            if (messageRepository == null) {
                                 localMediaMessages += MediaMessage(
                                     id = attachment.id,
                                     attachment = attachment,
@@ -481,25 +780,21 @@ fun ChatScreen(
                                     createdAt = OffsetDateTime.now().toString(),
                                     delivered = false,
                                 )
-                                sentCount++
-                            } else if (result.isSuccess) {
-                                val message = result.getOrThrow()
-                                localMediaMessages += MediaMessage(
-                                    id = message.id,
-                                    attachment = attachment,
-                                    mimeType = attachment.mimeType,
-                                    createdAt = message.createdAt,
-                                    delivered = message.deliveredAt != null,
-                                )
-                                sentCount++
+                                queuedCount++
+                            } else {
+                                messageRepository.enqueueMedia(
+                                    attachment.uri,
+                                    attachment.mimeType,
+                                    attachment.sizeBytes,
+                                ).onSuccess { queuedCount++ }
                             }
                         }
                         val message = when {
-                            sentCount == attachments.size -> SUCCESS_TOAST_TEXT
-                            sentCount > 0 -> "Отправлено файлов: $sentCount из ${attachments.size}"
-                            else -> "Не удалось отправить медиа"
+                            queuedCount == attachments.size -> "Медиа добавлено в очередь отправки"
+                            queuedCount > 0 -> "Добавлено файлов: $queuedCount из ${attachments.size}"
+                            else -> "Не удалось сохранить медиа"
                         }
-                        Toast.makeText(context, message, if (sentCount > 0) Toast.LENGTH_SHORT else Toast.LENGTH_LONG).show()
+                        Toast.makeText(context, message, if (queuedCount > 0) Toast.LENGTH_SHORT else Toast.LENGTH_LONG).show()
                     }
                 },
                 onCurrentLocation = {
@@ -537,7 +832,84 @@ fun ChatScreen(
 }
 
 @Composable
+private fun AttachmentSuggestion(
+    onDismiss: () -> Unit,
+    onMedia: () -> Unit,
+    onLocation: () -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer,
+        tonalElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Можно отправить фото, видео или геолокацию.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
+                    Icon(Icons.Rounded.Close, "Закрыть подсказку")
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(onClick = onMedia, modifier = Modifier.weight(0.8f)) {
+                    Icon(Icons.Rounded.PhotoCamera, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "Медиа",
+                        maxLines = 1,
+                        softWrap = false,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+                FilledTonalButton(onClick = onLocation, modifier = Modifier.weight(1.2f)) {
+                    Icon(Icons.Rounded.LocationOn, null)
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "Геолокация",
+                        maxLines = 1,
+                        softWrap = false,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConnectionStatusBar(status: ConnectionStatus) {
+    val statusColor = when (status) {
+        ConnectionStatus.ONLINE -> Color(0xFF2E7D32)
+        ConnectionStatus.CONNECTING -> Color(0xFFF57C00)
+        ConnectionStatus.OFFLINE -> MaterialTheme.colorScheme.error
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(statusColor.copy(alpha = 0.10f))
+            .padding(horizontal = 16.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(7.dp).clip(CircleShape).background(statusColor))
+        Spacer(Modifier.width(7.dp))
+        Text(
+            text = status.text,
+            style = MaterialTheme.typography.labelSmall,
+            color = statusColor,
+        )
+    }
+}
+
+@Composable
 private fun AttachmentSheet(
+    initialTab: AttachmentTab,
     media: List<MediaAttachment>,
     recentPhotoUris: List<android.net.Uri>,
     galleryAccessGranted: Boolean,
@@ -553,7 +925,7 @@ private fun AttachmentSheet(
     onOpenStaticLocationPicker: () -> Unit,
     onStartLiveLocation: () -> Unit,
 ) {
-    var selectedTab by remember { mutableStateOf(AttachmentTab.GALLERY) }
+    var selectedTab by remember(initialTab) { mutableStateOf(initialTab) }
     Column(Modifier.fillMaxWidth().heightIn(min = 420.dp, max = 620.dp)) {
         Box(Modifier.fillMaxWidth().height(54.dp)) {
             IconButton(onClick = onClose, modifier = Modifier.align(Alignment.CenterStart).padding(start = 8.dp)) {
@@ -780,7 +1152,7 @@ private fun MediaPreviewTile(attachment: MediaAttachment, onRemove: (MediaAttach
 }
 
 @Composable
-private fun MediaBubble(message: MediaMessage) {
+private fun MediaBubble(message: MediaMessage, onRetry: (String) -> Unit) {
     val context = LocalContext.current
     var showVideoPlayer by remember { mutableStateOf(false) }
     var showImageViewer by remember { mutableStateOf(false) }
@@ -799,6 +1171,22 @@ private fun MediaBubble(message: MediaMessage) {
             ImageRequest.Builder(context).data(url).headers(headers).build()
         }
     }
+    val videoThumbnailModel = remember(message.attachment?.uri, message.remoteUrl, message.accessToken) {
+        if (!isVideo) return@remember null
+        val data = message.attachment?.uri ?: message.remoteUrl ?: return@remember null
+        val builder = ImageRequest.Builder(context)
+            .data(data)
+            .decoderFactory(VideoFrameDecoder.Factory())
+            .videoFrameMillis(0)
+        if (message.remoteUrl != null) {
+            val headers = Headers.Builder()
+                .add("X-Client-App", "eyewitness")
+                .apply { message.accessToken?.let { add("Authorization", "Bearer $it") } }
+                .build()
+            builder.headers(headers)
+        }
+        builder.build()
+    }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
         Box(
             Modifier.width(200.dp).height(140.dp)
@@ -809,18 +1197,26 @@ private fun MediaBubble(message: MediaMessage) {
                 },
         ) {
             when {
-                message.attachment != null -> MediaContent(message.attachment, Modifier.fillMaxSize())
-                message.mimeType.startsWith("video/") -> Icon(
-                    Icons.Rounded.PlayArrow,
-                    "Видео",
-                    tint = Color.White,
-                    modifier = Modifier.size(48.dp).align(Alignment.Center),
+                isVideo && videoThumbnailModel != null -> AsyncImage(
+                    model = videoThumbnailModel,
+                    contentDescription = "Первый кадр видео",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
                 )
+                message.attachment != null -> MediaContent(message.attachment, Modifier.fillMaxSize())
                 remoteModel != null -> AsyncImage(
                     model = remoteModel,
                     contentDescription = kindLabel,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
+                )
+            }
+            if (isVideo) {
+                Icon(
+                    Icons.Rounded.PlayArrow,
+                    "Видео",
+                    tint = Color.White,
+                    modifier = Modifier.size(48.dp).align(Alignment.Center),
                 )
             }
             Text(
@@ -831,9 +1227,22 @@ private fun MediaBubble(message: MediaMessage) {
             )
         }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 3.dp, end = 2.dp)) {
-            Text(message.createdAt.toMessageTime(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-            Spacer(Modifier.width(4.dp))
-            DeliveryChecks(message.delivered)
+            when (message.pendingStatus) {
+                PendingMessageStatus.SENDING -> {
+                    Text(message.createdAt.toMessageTime(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Отправляется…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                }
+                PendingMessageStatus.FAILED -> FailedMessageStatus(
+                    time = message.createdAt.toMessageTime(),
+                    onRetry = { message.pendingId?.let(onRetry) },
+                )
+                null -> {
+                    Text(message.createdAt.toMessageTime(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Spacer(Modifier.width(4.dp))
+                    DeliveryChecks(message.delivered)
+                }
+            }
         }
     }
     if (showVideoPlayer) VideoPlayerDialog(message, onDismiss = { showVideoPlayer = false })
@@ -912,7 +1321,7 @@ private fun VideoPlayerDialog(message: MediaMessage, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun StaticLocationBubble(message: StaticLocationMessage) {
+private fun StaticLocationBubble(message: StaticLocationMessage, onRetry: (String) -> Unit) {
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
         Surface(
             color = OutgoingBubble,
@@ -935,9 +1344,22 @@ private fun StaticLocationBubble(message: StaticLocationMessage) {
             }
         }
         Row(modifier = Modifier.padding(top = 3.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(message.createdAt.toMessageTime(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-            Spacer(Modifier.width(4.dp))
-            DeliveryChecks(message.delivered)
+            when (message.pendingStatus) {
+                PendingMessageStatus.SENDING -> {
+                    Text(message.createdAt.toMessageTime(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Отправляется…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                }
+                PendingMessageStatus.FAILED -> FailedMessageStatus(
+                    time = message.createdAt.toMessageTime(),
+                    onRetry = { message.pendingId?.let(onRetry) },
+                )
+                null -> {
+                    Text(message.createdAt.toMessageTime(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Spacer(Modifier.width(4.dp))
+                    DeliveryChecks(message.delivered)
+                }
+            }
         }
     }
 }
@@ -997,7 +1419,7 @@ private fun LiveLocationBubble(
             }
         }
         Text(
-            "${java.time.Instant.ofEpochMilli(state.startedAtMillis).atZone(java.time.ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))} · Точки отправляются на сервер каждую секунду",
+            "${java.time.Instant.ofEpochMilli(state.startedAtMillis).atZone(MOSCOW_ZONE).format(DateTimeFormatter.ofPattern("HH:mm"))} · Точки отправляются на сервер каждую секунду",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.outline,
             modifier = Modifier.padding(top = 3.dp, end = 2.dp),
@@ -1008,7 +1430,23 @@ private fun LiveLocationBubble(
 @Composable
 private fun MediaContent(attachment: MediaAttachment, modifier: Modifier) {
     if (attachment.kind == MediaKind.VIDEO) {
-        Box(modifier) { Icon(Icons.Rounded.PlayArrow, "Видео", tint = Color.White, modifier = Modifier.size(48.dp).align(Alignment.Center)) }
+        val context = LocalContext.current
+        val thumbnail = remember(attachment.uri) {
+            ImageRequest.Builder(context)
+                .data(attachment.uri)
+                .decoderFactory(VideoFrameDecoder.Factory())
+                .videoFrameMillis(0)
+                .build()
+        }
+        Box(modifier) {
+            AsyncImage(
+                model = thumbnail,
+                contentDescription = "Первый кадр видео",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+            Icon(Icons.Rounded.PlayArrow, "Видео", tint = Color.White, modifier = Modifier.size(48.dp).align(Alignment.Center))
+        }
     } else {
         AsyncImage(
             model = attachment.uri,
@@ -1020,7 +1458,7 @@ private fun MediaContent(attachment: MediaAttachment, modifier: Modifier) {
 }
 
 @Composable
-private fun MessageBubble(message: PreviewMessage) {
+private fun MessageBubble(message: PreviewMessage, onRetry: (String) -> Unit = {}) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (message.outgoing) Arrangement.End else Arrangement.Start, verticalAlignment = Alignment.Bottom) {
         if (!message.outgoing) {
             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(31.dp)) {
@@ -1028,26 +1466,80 @@ private fun MessageBubble(message: PreviewMessage) {
             }
             Spacer(Modifier.width(9.dp))
         }
-        Surface(
-            color = if (message.outgoing) OutgoingBubble else IncomingBubble,
-            shape = RoundedCornerShape(15.dp),
-            shadowElevation = if (message.outgoing) 0.dp else 1.dp,
-            modifier = Modifier.widthIn(max = 264.dp),
-        ) {
-            Column(Modifier.padding(horizontal = 15.dp, vertical = 10.dp)) {
-                Text(
-                    message.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Row(Modifier.align(if (message.outgoing) Alignment.End else Alignment.Start), verticalAlignment = Alignment.CenterVertically) {
-                    Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-                    if (message.outgoing) {
-                        Spacer(Modifier.width(4.dp))
-                        DeliveryChecks(message.delivered)
+        Column(horizontalAlignment = if (message.outgoing) Alignment.End else Alignment.Start) {
+            Surface(
+                color = if (message.outgoing) OutgoingBubble else IncomingBubble,
+                shape = RoundedCornerShape(15.dp),
+                shadowElevation = if (message.outgoing) 0.dp else 1.dp,
+                modifier = Modifier.widthIn(max = 264.dp),
+            ) {
+                Column(Modifier.padding(horizontal = 15.dp, vertical = 10.dp)) {
+                    Text(
+                        message.text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    if (message.pendingStatus != PendingMessageStatus.FAILED) {
+                        Row(Modifier.align(if (message.outgoing) Alignment.End else Alignment.Start), verticalAlignment = Alignment.CenterVertically) {
+                            Text(message.time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                            if (message.pendingStatus == PendingMessageStatus.SENDING) {
+                                Spacer(Modifier.width(6.dp))
+                                Text("Отправляется…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                            } else if (message.outgoing) {
+                                Spacer(Modifier.width(4.dp))
+                                DeliveryChecks(message.delivered)
+                            }
+                        }
                     }
                 }
             }
+            if (message.pendingStatus == PendingMessageStatus.FAILED && message.pendingId != null) {
+                FailedMessageStatus(message.time, onRetry = { onRetry(message.pendingId) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun FailedMessageStatus(
+    time: String,
+    onRetry: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.padding(top = 5.dp, end = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Rounded.WarningAmber,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            "Не отправлено",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.error,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(" · $time · ", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline)
+        Row(
+            modifier = Modifier.clickable(onClick = onRetry),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Rounded.Refresh,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(3.dp))
+            Text(
+                "Повторить",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+            )
         }
     }
 }
@@ -1082,33 +1574,33 @@ private fun DateSeparator(date: LocalDate) {
     )
 }
 
+private val MOSCOW_ZONE: ZoneId = ZoneId.of("Europe/Moscow")
+
 private fun String.toMessageTime(): String = runCatching {
-    OffsetDateTime.parse(this).atZoneSameInstant(java.time.ZoneId.systemDefault())
-        .toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm"))
+    OffsetDateTime.parse(this).atZoneSameInstant(MOSCOW_ZONE).toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm"))
 }.recoverCatching {
-    LocalDateTime.parse(this).atOffset(java.time.ZoneOffset.UTC)
-        .atZoneSameInstant(java.time.ZoneId.systemDefault())
+    LocalDateTime.parse(this).atZone(java.time.ZoneOffset.UTC).withZoneSameInstant(MOSCOW_ZONE)
         .toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm"))
 }.getOrElse {
     substringAfter('T', "--:--").take(5).takeIf { value -> value.matches(Regex("\\d{2}:\\d{2}")) } ?: "--:--"
 }
 
 private fun LocalDate.toDateHeader(): String {
+    val today = LocalDate.now(MOSCOW_ZONE)
     val monthName = month.getDisplayName(TextStyle.FULL, Locale.forLanguageTag("ru"))
-    val dateText = "$dayOfMonth $monthName" + if (year != LocalDate.now().year) " $year" else ""
+    val dateText = "$dayOfMonth $monthName" + if (year != today.year) " $year" else ""
     return when (this) {
-        LocalDate.now() -> "Сегодня, $dateText"
-        LocalDate.now().minusDays(1) -> "Вчера, $dateText"
+        today -> "Сегодня, $dateText"
+        today.minusDays(1) -> "Вчера, $dateText"
         else -> dateText.replaceFirstChar { it.uppercase(Locale.forLanguageTag("ru")) }
     }
 }
 
 private fun String.toMessageDate(): LocalDate = runCatching {
-    OffsetDateTime.parse(this).atZoneSameInstant(java.time.ZoneId.systemDefault()).toLocalDate()
+    OffsetDateTime.parse(this).atZoneSameInstant(MOSCOW_ZONE).toLocalDate()
 }.recoverCatching {
-    LocalDateTime.parse(this).atOffset(java.time.ZoneOffset.UTC)
-        .atZoneSameInstant(java.time.ZoneId.systemDefault()).toLocalDate()
-}.getOrElse { LocalDate.now() }
+    LocalDateTime.parse(this).atZone(java.time.ZoneOffset.UTC).withZoneSameInstant(MOSCOW_ZONE).toLocalDate()
+}.getOrElse { LocalDate.now(MOSCOW_ZONE) }
 
 private fun String.toTimelineMillis(): Long = runCatching {
     OffsetDateTime.parse(this).toInstant().toEpochMilli()

@@ -19,22 +19,62 @@ private object Route {
 
 @Composable
 fun EyewitnessApp() {
-    val navController = rememberNavController()
     val container = (LocalContext.current.applicationContext as EyewitnessApplication).container
+    val deviceRepository = container.deviceRepository
+    val initialDestination = remember {
+        resolveLaunchDestination(
+            welcomeCompleted = deviceRepository.isWelcomeCompleted(),
+            hasSavedSession = deviceRepository.savedSession() != null,
+        )
+    }
+    var startupReady by remember { mutableStateOf(initialDestination == LaunchDestination.WELCOME) }
+    var startupError by remember { mutableStateOf(false) }
+    var startupAttempt by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(initialDestination, startupAttempt) {
+        if (initialDestination == LaunchDestination.CHAT) {
+            startupError = false
+            container.registerDevice()
+                .onSuccess { startupReady = true }
+                .onFailure { startupError = true }
+        }
+    }
+
+    if (!startupReady) {
+        StartupConnectionScreen(
+            hasError = startupError,
+            onRetry = {
+                startupError = false
+                startupAttempt++
+            },
+        )
+        return
+    }
+
+    val navController = rememberNavController()
     var selectedStaticLocation by remember { mutableStateOf<StaticLocation?>(null) }
 
-    NavHost(navController = navController, startDestination = Route.Welcome) {
+    NavHost(
+        navController = navController,
+        startDestination = if (initialDestination == LaunchDestination.CHAT) Route.Chat else Route.Welcome,
+    ) {
         composable(Route.Welcome) {
             WelcomeScreen(onStartClick = {
-                container.deviceRepository.register().map {
-                    navController.navigate(Route.Chat) { launchSingleTop = true }
+                container.registerDevice().map {
+                    deviceRepository.markWelcomeCompleted()
+                    navController.navigate(Route.Chat) {
+                        launchSingleTop = true
+                        popUpTo(Route.Welcome) { inclusive = true }
+                    }
                 }
             })
         }
         composable(Route.Chat) {
             ChatScreen(
                 onBackClick = navController::navigateUp,
+                deviceRepository = container.deviceRepository,
                 messageRepository = container.messageRepository,
+                realtimeRepository = container.realtimeRepository,
                 selectedStaticLocation = selectedStaticLocation,
                 onStaticLocationConsumed = { selectedStaticLocation = null },
                 onOpenStaticLocationPicker = { navController.navigate(Route.LocationPicker) },

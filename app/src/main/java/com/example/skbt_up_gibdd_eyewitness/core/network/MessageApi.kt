@@ -1,86 +1,33 @@
 package com.example.skbt_up_gibdd_eyewitness.core.network
 
 import com.google.gson.annotations.SerializedName
-import retrofit2.http.Body
-import retrofit2.http.GET
-import retrofit2.http.Multipart
-import retrofit2.http.PATCH
-import retrofit2.http.POST
-import retrofit2.http.Part
-import retrofit2.http.Path
-import retrofit2.http.Query
 import okhttp3.MultipartBody
+import okhttp3.RequestBody
+import okhttp3.ResponseBody
+import retrofit2.Response
+import retrofit2.http.*
 
 interface MessageApi {
-    @POST("api/v1/messages")
-    suspend fun sendText(@Body request: CreateMessageRequest): MessageResponse
-
-    @GET("api/v1/chats/{observerDeviceId}/messages")
-    suspend fun getMessages(
-        @Path("observerDeviceId") observerDeviceId: String,
-        @Query("after_message_id") afterMessageId: String? = null,
-        @Query("limit") limit: Int = 100,
-    ): ChatMessagesResponse
-
-    @PATCH("api/v1/messages/{messageId}/delivered")
-    suspend fun markDelivered(@Path("messageId") messageId: String): MessageResponse
-
-    @POST("api/v1/messages/static-location")
-    suspend fun sendStaticLocation(@Body request: LocationPointRequest): MessageResponse
-
-    @Multipart
-    @POST("api/v1/messages/media/upload")
-    suspend fun uploadMedia(@Part file: MultipartBody.Part): MessageResponse
-
-    @POST("api/v1/messages/live-location/start")
-    suspend fun startLiveLocation(@Body request: EmptyRequest = EmptyRequest()): MessageResponse
-
-    @POST("api/v1/messages/{messageId}/live-location/points")
-    suspend fun sendLiveLocationPoint(
-        @Path("messageId") messageId: String,
-        @Body request: LocationPointRequest,
-    ): LiveLocationPointResponse
-
-    @POST("api/v1/messages/{messageId}/live-location/stop")
-    suspend fun stopLiveLocation(@Path("messageId") messageId: String): MessageResponse
+    @POST("api/v1/chats/{chatId}/messages") suspend fun sendText(@Path("chatId") chatId: String, @Body body: CreateMessageRequest): MessageResponse
+    @GET("api/v1/chats/{chatId}/messages") suspend fun getMessages(@Path("chatId") chatId: String, @Query("requester_device_id") deviceId: String, @Query("limit") limit: Int = 100, @Query("before") before: String? = null): ChatMessagesResponse
+    @PATCH("api/v1/chats/{chatId}/messages/{messageId}/read") suspend fun markRead(@Path("chatId") chatId: String, @Path("messageId") messageId: String, @Query("requester_device_id") deviceId: String): MessageResponse
+    @POST("api/v1/chats/{chatId}/locations/static") suspend fun sendStaticLocation(@Path("chatId") chatId: String, @Body body: LocationPointRequest): LocationMessageResponse
+    @Multipart @POST("api/v1/chats/{chatId}/media") suspend fun uploadMedia(@Path("chatId") chatId: String, @Part("sender_device_id") deviceId: RequestBody, @Part file: MultipartBody.Part): MediaMessageResponse
+    @Streaming @GET("api/v1/media/{attachmentId}") suspend fun getMediaMetadata(@Path("attachmentId") attachmentId: String, @Query("requester_device_id") deviceId: String, @Header("Range") range: String = "bytes=0-0"): Response<ResponseBody>
+    @POST("api/v1/chats/{chatId}/locations/live") suspend fun startLiveLocation(@Path("chatId") chatId: String, @Body body: LiveLocationStartRequest): LocationMessageResponse
+    @POST("api/v1/location-sessions/{sessionId}/points") suspend fun sendLiveLocationPoint(@Path("sessionId") sessionId: String, @Body body: LocationPointRequest): LocationPointResponse
+    @GET("api/v1/location-sessions/{sessionId}") suspend fun getLocationSession(@Path("sessionId") sessionId: String, @Query("requester_device_id") deviceId: String): LocationSessionResponse
+    @PATCH("api/v1/location-sessions/{sessionId}/finish") suspend fun stopLiveLocation(@Path("sessionId") sessionId: String, @Body body: LocationFinishRequest): LocationSessionResponse
 }
 
-class EmptyRequest
-
-data class LocationPointRequest(val latitude: Double, val longitude: Double)
-
-data class LiveLocationPointResponse(
-    @SerializedName("recorded_at") val recordedAt: String,
-    val latitude: Double,
-    val longitude: Double,
-)
-
-data class CreateMessageRequest(
-    @SerializedName("message_type") val messageType: String = "TEXT",
-    val text: String,
-)
-
-data class ChatMessagesResponse(val messages: List<MessageResponse>)
-
-data class MessageResponse(
-    @SerializedName("message_id") val messageId: String,
-    @SerializedName("observer_device_id") val observerDeviceId: String,
-    @SerializedName("sender_device_id") val senderDeviceId: String,
-    @SerializedName("message_type") val messageType: String,
-    val text: String?,
-    @SerializedName("static_location") val staticLocation: StaticLocationResponse?,
-    val media: MediaResponse?,
-    @SerializedName("live_location") val liveLocation: LiveLocationResponse?,
-    @SerializedName("created_at") val createdAt: String,
-    @SerializedName("delivered_at") val deliveredAt: String?,
-)
-
-data class StaticLocationResponse(val latitude: Double, val longitude: Double)
-
-data class MediaResponse(
-    @SerializedName("storage_key") val storageKey: String,
-    @SerializedName("mime_type") val mimeType: String,
-    @SerializedName("last_viewed_at") val lastViewedAt: String?,
-)
-
-data class LiveLocationResponse(@SerializedName("ends_at") val endsAt: String)
+data class CreateMessageRequest(@SerializedName("sender_device_id") val senderDeviceId: String, val text: String)
+data class ChatMessagesResponse(val items: List<MessageResponse>, @SerializedName("next_before") val nextBefore: String?)
+data class MessageResponse(val id: String, @SerializedName("chat_id") val chatId: String, @SerializedName("sender_device_id") val senderDeviceId: String, @SerializedName("message_type") val messageType: String, val text: String?, @SerializedName("sent_at") val sentAt: String, @SerializedName("read_at") val readAt: String?, @SerializedName("attachment_id") val attachmentId: String?, @SerializedName("location_session_id") val locationSessionId: String?)
+data class LocationPointRequest(@SerializedName("sender_device_id") val senderDeviceId: String, val latitude: Double, val longitude: Double)
+data class LiveLocationStartRequest(@SerializedName("sender_device_id") val senderDeviceId: String, @SerializedName("duration_seconds") val durationSeconds: Int = 900)
+data class LocationFinishRequest(@SerializedName("sender_device_id") val senderDeviceId: String)
+data class LocationMessageResponse(val message: MessageResponse, val session: LocationSessionResponse)
+data class MediaMessageResponse(val message: MessageResponse, val attachment: AttachmentResponse)
+data class AttachmentResponse(val id: String, @SerializedName("mime_type") val mimeType: String)
+data class LocationSessionResponse(val id: String, @SerializedName("message_id") val messageId: String, val status: String, @SerializedName("expires_at") val expiresAt: String?, val points: List<LocationPointResponse> = emptyList())
+data class LocationPointResponse(val latitude: Double, val longitude: Double, @SerializedName("captured_at") val capturedAt: String)
