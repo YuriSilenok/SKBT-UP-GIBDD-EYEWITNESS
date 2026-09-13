@@ -179,7 +179,6 @@ private sealed interface BanUiState {
     data object Error : BanUiState
     data class Banned(val ban: ActiveBan) : BanUiState
 }
-private const val SUCCESS_TOAST_TEXT = "Спасибо за обращение. Мы его уже передали инспекторам."
 
 private val previewMessages = listOf(
     PreviewMessage("preview-1", "Вижу автомобиль, водитель ведёт себя подозрительно", "14:22", true, createdAt = "2026-08-14T14:22:00Z"),
@@ -510,7 +509,6 @@ fun ChatScreen(
                             }
                         }
                     }
-                    Toast.makeText(context, SUCCESS_TOAST_TEXT, Toast.LENGTH_LONG).show()
                 }
                 is PendingMessageEvent.Failed -> Toast.makeText(
                     context,
