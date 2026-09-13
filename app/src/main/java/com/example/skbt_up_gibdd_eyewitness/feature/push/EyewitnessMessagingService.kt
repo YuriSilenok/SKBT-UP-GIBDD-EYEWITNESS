@@ -5,6 +5,9 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import androidx.core.app.NotificationCompat
 import com.example.skbt_up_gibdd_eyewitness.EyewitnessApplication
 import com.example.skbt_up_gibdd_eyewitness.MainActivity
@@ -17,20 +20,32 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 class EyewitnessMessagingService : FirebaseMessagingService() {
-    override fun onRegistered(installationId: String) {
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override fun onNewToken(token: String) {
+        super.onNewToken(token)
         val application = applicationContext as EyewitnessApplication
         serviceScope.launch {
-            application.container.syncPushToken(installationId)
+            application.container.syncPushToken(token)
         }
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        val title = message.notification?.title ?: message.data["title"] ?: "ГИБДД-Очевидец"
-        val body = message.notification?.body ?: message.data["body"] ?: "В чате новое сообщение"
+        val event = message.data["event"]
+        val title = message.notification?.title ?: message.data["title"] ?: "Очевидец 44"
+        val body = message.notification?.body ?: message.data["body"] ?: when (event) {
+            "observer_banned" -> "Отправка сообщений временно недоступна"
+            "observer_ban_revoked" -> "Блокировка снята"
+            "observer_ban_expired" -> "Срок блокировки закончился"
+            else -> "В чате новое сообщение"
+        }
         showNotification(title, body)
     }
 
     private fun showNotification(title: String, body: String) {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
         val manager = getSystemService(NotificationManager::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(
@@ -59,8 +74,8 @@ class EyewitnessMessagingService : FirebaseMessagingService() {
         )
     }
 
-    private companion object {
-        const val CHANNEL_ID = "chat_messages"
+    companion object {
+        const val CHANNEL_ID = "gibdd_events"
         val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         fun messageNotificationId(): Int = (System.currentTimeMillis() and 0x7FFFFFFF).toInt()
     }

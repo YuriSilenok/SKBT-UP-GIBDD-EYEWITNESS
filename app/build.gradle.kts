@@ -27,7 +27,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.skbt_up_gibdd_eyewitness"
+        applicationId = "ru.example.gibdd"
         minSdk = 26
         targetSdk = 36
         versionCode = 1

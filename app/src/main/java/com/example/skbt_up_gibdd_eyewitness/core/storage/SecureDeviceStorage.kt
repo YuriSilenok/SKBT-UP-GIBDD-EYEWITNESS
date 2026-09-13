@@ -45,6 +45,7 @@ class SecureDeviceStorage(context: Context) {
     fun readHistoryCutoff(): Long = readEncrypted(KEY_HISTORY_CUTOFF)?.toLongOrNull() ?: 0L
     fun savePushToken(token: String) = writeEncrypted(KEY_PUSH_TOKEN, token)
     fun readPushToken(): String? = readEncrypted(KEY_PUSH_TOKEN)
+    fun clearPushToken() = preferences.edit().remove(KEY_PUSH_TOKEN).apply()
 
     private fun writeEncrypted(key: String, value: String) {
         val cipher = Cipher.getInstance(TRANSFORMATION).apply {

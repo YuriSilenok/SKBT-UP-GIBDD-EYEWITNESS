@@ -129,6 +129,13 @@ private data class StaticLocationMessage(
     val pendingId: String? = null,
     val pendingStatus: PendingMessageStatus? = null,
 )
+private data class ConfirmedLiveLocationMessage(
+    val id: String,
+    val location: StaticLocation?,
+    val endsAt: String,
+    val createdAt: String,
+    val delivered: Boolean,
+)
 private data class MediaMessage(
     val id: String,
     val attachment: MediaAttachment? = null,
@@ -158,6 +165,11 @@ private sealed interface ChatTimelineItem {
         override val id = "media-${message.id}"
         override val createdAt = message.createdAt
     }
+
+    data class LiveLocation(val message: ConfirmedLiveLocationMessage) : ChatTimelineItem {
+        override val id = "live-${message.id}"
+        override val createdAt = message.createdAt
+    }
 }
 private enum class AttachmentTab { GALLERY, LOCATION }
 private enum class LocationPermissionAction { CURRENT, LIVE }
@@ -178,7 +190,6 @@ private val previewMessages = listOf(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
-    onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
     deviceRepository: DeviceRepository? = null,
     messageRepository: MessageRepository? = null,
@@ -233,6 +244,7 @@ fun ChatScreen(
     }
     val localMediaMessages = remember { mutableStateListOf<MediaMessage>() }
     val staticLocationMessages = remember { mutableStateListOf<StaticLocationMessage>() }
+    val confirmedLiveLocationMessages = remember { mutableStateListOf<ConfirmedLiveLocationMessage>() }
     val confirmedPendingIds = remember { mutableStateListOf<String>() }
     val listState = rememberLazyListState()
     var isSending by remember { mutableStateOf(false) }
@@ -248,7 +260,7 @@ fun ChatScreen(
         textMessages.removeAll { current -> textUpdates.any { it.id == current.id } }
         textMessages.addAll(textUpdates)
 
-        val locationUpdates = messages.mapNotNull { message ->
+        val locationUpdates = messages.filter { it.liveEndsAt == null }.mapNotNull { message ->
                 val latitude = message.staticLatitude ?: return@mapNotNull null
                 val longitude = message.staticLongitude ?: return@mapNotNull null
                 StaticLocationMessage(
@@ -260,6 +272,21 @@ fun ChatScreen(
             }
         staticLocationMessages.removeAll { current -> locationUpdates.any { it.id == current.id } }
         staticLocationMessages.addAll(locationUpdates)
+
+        val liveUpdates = messages.mapNotNull { message ->
+            val endsAt = message.liveEndsAt ?: return@mapNotNull null
+            ConfirmedLiveLocationMessage(
+                id = message.id,
+                location = if (message.staticLatitude != null && message.staticLongitude != null) {
+                    StaticLocation(message.staticLatitude, message.staticLongitude)
+                } else null,
+                endsAt = endsAt,
+                createdAt = message.createdAt,
+                delivered = message.deliveredAt != null,
+            )
+        }
+        confirmedLiveLocationMessages.removeAll { current -> liveUpdates.any { it.id == current.id } }
+        confirmedLiveLocationMessages.addAll(liveUpdates)
 
         val mediaUpdates = messages.mapNotNull { message ->
                 val mimeType = message.mediaMimeType ?: return@mapNotNull null
@@ -275,8 +302,16 @@ fun ChatScreen(
         localMediaMessages.removeAll { current -> mediaUpdates.any { it.id == current.id } }
         localMediaMessages.addAll(mediaUpdates)
     }
-    LaunchedEffect(cachedMessages) {
-        mergeConfirmedMessages(cachedMessages)
+    LaunchedEffect(cachedMessages, banUiState) {
+        if (banUiState is BanUiState.NotBanned) {
+            mergeConfirmedMessages(cachedMessages)
+        } else if (banUiState is BanUiState.Banned) {
+            textMessages.clear()
+            localMediaMessages.clear()
+            staticLocationMessages.clear()
+            confirmedLiveLocationMessages.clear()
+            confirmedPendingIds.clear()
+        }
     }
     val submitStaticLocation: suspend (StaticLocation) -> Unit = { location ->
         if (messageRepository == null) {
@@ -360,10 +395,11 @@ fun ChatScreen(
             banRepository.getActiveBan()
                 .onSuccess { ban ->
                     if (ban != null && !historyClearedForCurrentBan) {
-                        repository.clearLocalHistory()
+                        repository.clearLocalHistory(ban.startedAt.toEpochMilli())
                         textMessages.clear()
                         localMediaMessages.clear()
                         staticLocationMessages.clear()
+                        confirmedLiveLocationMessages.clear()
                         confirmedPendingIds.clear()
                         historyClearedForCurrentBan = true
                     } else if (ban == null) {
@@ -398,7 +434,7 @@ fun ChatScreen(
                             if (banUiState !is BanUiState.Banned) refreshMessages()
                             return@collect
                         }
-                        if (event.name == "observer_banned") refreshBan()
+                        if (event.name in BAN_STATE_EVENTS) refreshBan()
                         if (
                             event.name != "live_location_point" &&
                             event.name != "location.point" &&
@@ -491,12 +527,11 @@ fun ChatScreen(
 
     when (val state = banUiState) {
         BanUiState.Loading -> {
-            BanCheckScreen(onBackClick, error = false, onRetry = {})
+            BanCheckScreen(error = false, onRetry = {})
             return
         }
         BanUiState.Error -> {
             BanCheckScreen(
-                onBackClick = onBackClick,
                 error = true,
                 onRetry = {
                     banUiState = BanUiState.Loading
@@ -506,7 +541,7 @@ fun ChatScreen(
             return
         }
         is BanUiState.Banned -> {
-            BanScreen(state.ban, onBackClick)
+            BanScreen(state.ban)
             return
         }
         BanUiState.NotBanned -> Unit
@@ -570,6 +605,10 @@ fun ChatScreen(
             )
         }
         staticLocationMessages.forEach { add(ChatTimelineItem.StaticLocation(it)) }
+        val trackerActive = liveLocationState is LiveLocationState.Active
+        confirmedLiveLocationMessages
+            .filterNot { trackerActive && it.endsAt.toTimelineMillis() > System.currentTimeMillis() }
+            .forEach { add(ChatTimelineItem.LiveLocation(it)) }
         pendingStaticLocations.filterNot { it.localId in confirmedPendingIds }.forEach { pending ->
             add(
                 ChatTimelineItem.StaticLocation(
@@ -608,7 +647,7 @@ fun ChatScreen(
     }
 
     Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).imePadding()) {
-        AppTopBar(onBackClick)
+        AppTopBar()
         ConnectionStatusBar(realtimeConnectionState.toConnectionStatus())
         LazyColumn(
             state = listState,
@@ -637,6 +676,7 @@ fun ChatScreen(
                             timelineItem.message,
                             onRetry = { pendingId -> messageRepository?.retryPendingStaticLocation(pendingId) },
                         )
+                        is ChatTimelineItem.LiveLocation -> ConfirmedLiveLocationBubble(timelineItem.message)
                     }
                 }
             }
@@ -830,6 +870,12 @@ fun ChatScreen(
         }
     }
 }
+
+private val BAN_STATE_EVENTS = setOf(
+    "observer_banned",
+    "observer_ban_revoked",
+    "observer_ban_expired",
+)
 
 @Composable
 private fun AttachmentSuggestion(
@@ -1151,6 +1197,7 @@ private fun MediaPreviewTile(attachment: MediaAttachment, onRemove: (MediaAttach
     }
 }
 
+@androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 @Composable
 private fun MediaBubble(message: MediaMessage, onRetry: (String) -> Unit) {
     val context = LocalContext.current
@@ -1360,6 +1407,47 @@ private fun StaticLocationBubble(message: StaticLocationMessage, onRetry: (Strin
                     DeliveryChecks(message.delivered)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ConfirmedLiveLocationBubble(message: ConfirmedLiveLocationMessage) {
+    val active = message.endsAt.toTimelineMillis() > System.currentTimeMillis()
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+        Surface(
+            color = OutgoingBubble,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.width(270.dp),
+        ) {
+            Column(Modifier.padding(14.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(42.dp)) {
+                        Icon(Icons.Rounded.ShareLocation, null, tint = Color.White, modifier = Modifier.padding(9.dp))
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text("Live-геолокация", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                        Text(
+                            if (active) "Передача геопозиции активна" else "Передача геопозиции завершена",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(9.dp))
+                Text(
+                    message.location?.let {
+                        String.format(java.util.Locale.US, "%.6f, %.6f", it.latitude, it.longitude)
+                    } ?: "Координаты ещё не получены",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+        Row(modifier = Modifier.padding(top = 3.dp, end = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(message.createdAt.toMessageTime(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+            Spacer(Modifier.width(4.dp))
+            DeliveryChecks(message.delivered)
         }
     }
 }
@@ -1638,4 +1726,4 @@ private suspend fun currentStaticLocation(context: Context): StaticLocation? {
 
 @Preview(showBackground = true, widthDp = 403, heightDp = 874)
 @Composable
-private fun ChatPreview() = SKBTUPGIBDDEYEWITNESSTheme { ChatScreen({}) }
+private fun ChatPreview() = SKBTUPGIBDDEYEWITNESSTheme { ChatScreen() }

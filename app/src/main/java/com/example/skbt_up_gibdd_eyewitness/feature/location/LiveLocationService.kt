@@ -50,7 +50,7 @@ class LiveLocationService : Service(), LocationListener {
         requestLocationUpdates()
         startJob = serviceScope.launch(Dispatchers.IO) {
             messageRepository.startLiveLocation()
-                .onSuccess { liveMessageId = it.id }
+                .onSuccess { liveMessageId = it.locationSessionId ?: it.id }
                 .onFailure { requestStop(notifyBackend = false) }
         }
         recordingJob?.cancel()
@@ -137,7 +137,7 @@ class LiveLocationService : Service(), LocationListener {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_shield)
-            .setContentTitle("ГИБДД-Очевидец")
+            .setContentTitle("Очевидец 44")
             .setContentText("Live-геолокация передаётся в течение 15 минут")
             .setContentIntent(openAppIntent)
             .setOngoing(true)

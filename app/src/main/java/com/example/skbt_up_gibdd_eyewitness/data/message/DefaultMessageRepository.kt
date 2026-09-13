@@ -170,7 +170,7 @@ class DefaultMessageRepository(
                     rawMimeType
                 }.getOrNull().normalizedMediaMimeType()
             }
-            val point = location?.points?.firstOrNull()
+            val point = location?.points?.lastOrNull()
             response.toDomain(
                 mediaMimeTypeOverride = mediaMimeType,
                 staticLatitudeOverride = point?.latitude,
@@ -183,8 +183,8 @@ class DefaultMessageRepository(
         }
     }
 
-    override suspend fun clearLocalHistory() {
-        storage.saveHistoryCutoff(System.currentTimeMillis())
+    override suspend fun clearLocalHistory(cutoffEpochMillis: Long) {
+        storage.saveHistoryCutoff(cutoffEpochMillis)
         olderMessagesCursor = null
         paginationInitialized = false
         retryJobs.values.forEach(Job::cancel)
@@ -297,7 +297,10 @@ class DefaultMessageRepository(
     override suspend fun startLiveLocation(): Result<ChatMessage> = runCatching {
         val session = requireNotNull(storage.readSession()) { "Устройство не зарегистрировано" }
         api.startLiveLocation(session.chatId, LiveLocationStartRequest(session.deviceId)).let { response ->
-            response.message.toDomain(idOverride = response.session.id, liveEndsAtOverride = response.session.expiresAt)
+            response.message.toDomain(
+                locationSessionIdOverride = response.session.id,
+                liveEndsAtOverride = response.session.expiresAt,
+            )
         }.also { messageDao.upsert(it.toEntity()) }
     }
 
@@ -321,6 +324,7 @@ class DefaultMessageRepository(
         idOverride: String? = null,
         mediaStorageKeyOverride: String? = null,
         mediaMimeTypeOverride: String? = null,
+        locationSessionIdOverride: String? = null,
         liveEndsAtOverride: String? = null,
         staticLatitudeOverride: Double? = null,
         staticLongitudeOverride: Double? = null,
@@ -334,6 +338,7 @@ class DefaultMessageRepository(
         staticLongitude = staticLongitudeOverride,
         mediaStorageKey = mediaStorageKeyOverride ?: attachmentId,
         mediaMimeType = mediaMimeTypeOverride,
+        locationSessionId = locationSessionIdOverride ?: locationSessionId,
         liveEndsAt = liveEndsAtOverride,
         createdAt = sentAt,
         deliveredAt = readAt,

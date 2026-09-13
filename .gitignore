@@ -10,6 +10,8 @@
 /.idea/
 .DS_Store
 /build
+/output/
+/tmp/
 /captures
 .externalNativeBuild
 .cxx

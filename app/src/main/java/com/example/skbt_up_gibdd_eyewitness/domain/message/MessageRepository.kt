@@ -20,7 +20,7 @@ interface MessageRepository {
     fun retryPendingText(localId: String)
     suspend fun getOwnMessages(): Result<List<ChatMessage>>
     suspend fun loadOlderMessages(): Result<List<ChatMessage>>
-    suspend fun clearLocalHistory()
+    suspend fun clearLocalHistory(cutoffEpochMillis: Long = System.currentTimeMillis())
     suspend fun markDelivered(messageId: String): Result<ChatMessage>
     suspend fun sendStaticLocation(latitude: Double, longitude: Double): Result<ChatMessage>
     fun enqueueStaticLocation(latitude: Double, longitude: Double): PendingStaticLocation

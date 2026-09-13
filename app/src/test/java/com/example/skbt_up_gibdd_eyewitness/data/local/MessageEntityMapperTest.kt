@@ -13,6 +13,8 @@ class MessageEntityMapperTest {
             senderDeviceId = "observer-1",
             text = "Сообщение",
             type = "TEXT",
+            locationSessionId = "location-session-1",
+            liveEndsAt = "2026-08-24T11:30:30+03:00",
             createdAt = "2026-08-24T11:15:30+03:00",
             deliveredAt = null,
         )

@@ -19,7 +19,7 @@ class ChatScreenTest {
     fun textCanBeEnteredAndSent() {
         composeRule.setContent {
             SKBTUPGIBDDEYEWITNESSTheme {
-                ChatScreen(onBackClick = {}, requestNotificationPermission = false, requestGalleryPermission = false)
+                ChatScreen(requestNotificationPermission = false, requestGalleryPermission = false)
             }
         }
 
@@ -33,7 +33,7 @@ class ChatScreenTest {
     fun attachmentButtonOpensMediaSheet() {
         composeRule.setContent {
             SKBTUPGIBDDEYEWITNESSTheme {
-                ChatScreen(onBackClick = {}, requestNotificationPermission = false, requestGalleryPermission = false)
+                ChatScreen(requestNotificationPermission = false, requestGalleryPermission = false)
             }
         }
 

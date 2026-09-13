@@ -45,6 +45,6 @@ fun AppTopBar(onBackClick: (() -> Unit)? = null) {
         }
         Image(painterResource(R.drawable.ic_shield), contentDescription = null, modifier = Modifier.size(25.dp))
         Spacer(Modifier.width(11.dp))
-        Text("ГИБДД-Очевидец", style = MaterialTheme.typography.headlineSmall, color = Color.White)
+        Text("Очевидец 44", style = MaterialTheme.typography.headlineSmall, color = Color.White)
     }
 }

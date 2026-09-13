@@ -22,8 +22,8 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.SKBTUPGIBDDEYEWITNESS">
         <meta-data
-            android:name="firebase_messaging_installation_id_enabled"
-            android:value="true" />
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="gibdd_events" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

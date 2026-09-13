@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1064731422389",
+    "project_id": "gibdd-c2ea3",
+    "storage_bucket": "gibdd-c2ea3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1064731422389:android:8293ccc33c79523ffc58fc",
+        "android_client_info": {
+          "package_name": "ru.example.gibdd"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDc3nWgc0h9V23N_uS7rdOvANuPHiKHhKU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

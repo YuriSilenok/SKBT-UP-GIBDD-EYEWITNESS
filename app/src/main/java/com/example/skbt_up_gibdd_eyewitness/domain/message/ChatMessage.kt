@@ -10,6 +10,7 @@ data class ChatMessage(
     val staticLongitude: Double? = null,
     val mediaStorageKey: String? = null,
     val mediaMimeType: String? = null,
+    val locationSessionId: String? = null,
     val liveEndsAt: String? = null,
     val createdAt: String,
     val deliveredAt: String?,

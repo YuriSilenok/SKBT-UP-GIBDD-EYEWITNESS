@@ -14,6 +14,7 @@ data class MessageEntity(
     val staticLongitude: Double?,
     val mediaStorageKey: String?,
     val mediaMimeType: String?,
+    val locationSessionId: String?,
     val liveEndsAt: String?,
     val createdAt: String,
     val createdAtEpochMillis: Long,

@@ -10,6 +10,7 @@ data class ActiveBan(
     val startedAt: Instant,
     val endsAt: Instant?,
     val number: Int,
+    val reason: String? = null,
 ) {
     val isPermanent: Boolean get() = number >= 3 && endsAt == null
 }

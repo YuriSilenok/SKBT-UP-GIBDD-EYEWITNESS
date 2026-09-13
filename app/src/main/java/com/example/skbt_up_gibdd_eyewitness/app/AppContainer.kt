@@ -2,6 +2,8 @@ package com.example.skbt_up_gibdd_eyewitness.app
 
 import android.content.Context
 import androidx.room.Room
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.skbt_up_gibdd_eyewitness.BuildConfig
 import com.example.skbt_up_gibdd_eyewitness.core.device.FingerprintProvider
 import com.example.skbt_up_gibdd_eyewitness.core.network.NetworkFactory
@@ -20,7 +22,7 @@ class AppContainer(context: Context) {
         context.applicationContext,
         EyewitnessDatabase::class.java,
         "eyewitness.db",
-    ).build()
+    ).addMigrations(MIGRATION_1_2).build()
     private val storage = SecureDeviceStorage(context)
     private val fingerprintProvider = FingerprintProvider(context, storage)
     private val pushTokenProvider = PushTokenProvider(context)
@@ -62,5 +64,11 @@ class AppContainer(context: Context) {
     suspend fun syncPushToken(token: String) = run {
         storage.savePushToken(token)
         deviceRepository.updatePushToken(token)
+    }
+}
+
+private val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE messages ADD COLUMN locationSessionId TEXT")
     }
 }

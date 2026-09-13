@@ -22,11 +22,9 @@ import com.example.skbt_up_gibdd_eyewitness.ui.theme.Navy
 import com.example.skbt_up_gibdd_eyewitness.ui.theme.SKBTUPGIBDDEYEWITNESSTheme
 import java.time.Instant
 
-@Suppress("UNUSED_PARAMETER")
 @Composable
 fun BanScreen(
     ban: ActiveBan,
-    onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize().background(AppBackground)) {
@@ -95,13 +93,12 @@ fun BanScreen(
 
 @Composable
 fun BanCheckScreen(
-    onBackClick: () -> Unit,
     error: Boolean,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        AppTopBar(onBackClick)
+        AppTopBar()
         Column(
             modifier = Modifier.fillMaxSize().padding(32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -134,7 +131,6 @@ private fun TemporaryBanPreview() = SKBTUPGIBDDEYEWITNESSTheme {
             Instant.parse("2026-08-19T11:30:00Z"),
             1,
         ),
-        {},
     )
 }
 
@@ -143,6 +139,5 @@ private fun TemporaryBanPreview() = SKBTUPGIBDDEYEWITNESSTheme {
 private fun PermanentBanPreview() = SKBTUPGIBDDEYEWITNESSTheme {
     BanScreen(
         ActiveBan("permanent", Instant.parse("2026-08-18T11:30:00Z"), null, 3),
-        {},
     )
 }

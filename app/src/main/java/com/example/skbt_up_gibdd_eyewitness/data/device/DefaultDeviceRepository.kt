@@ -2,6 +2,7 @@ package com.example.skbt_up_gibdd_eyewitness.data.device
 
 import com.example.skbt_up_gibdd_eyewitness.core.device.FingerprintProvider
 import com.example.skbt_up_gibdd_eyewitness.core.network.DeviceApi
+import com.example.skbt_up_gibdd_eyewitness.core.network.ActiveBanResponse
 import com.example.skbt_up_gibdd_eyewitness.core.network.RegisterDeviceRequest
 import com.example.skbt_up_gibdd_eyewitness.core.network.PushTokenUpdateRequest
 import com.example.skbt_up_gibdd_eyewitness.core.storage.SecureDeviceStorage
@@ -16,9 +17,6 @@ class DefaultDeviceRepository(
     private val fingerprintProvider: FingerprintProvider,
     private val storage: SecureDeviceStorage,
 ) : DeviceRepository {
-    @Volatile
-    private var lastRegistrationAtMillis: Long = 0L
-
     override suspend fun register(pushToken: String?): Result<DeviceSession> = runCatching {
         val response = api.register(
             RegisterDeviceRequest(
@@ -34,7 +32,6 @@ class DefaultDeviceRepository(
             banLevel = response.banLevel ?: 0,
         ).also { session ->
             storage.saveSession(session)
-            lastRegistrationAtMillis = System.currentTimeMillis()
             pushToken?.let { token -> runCatching { api.updatePushToken(session.deviceId, PushTokenUpdateRequest(token)) } }
         }
     }
@@ -45,44 +42,31 @@ class DefaultDeviceRepository(
         Unit
     }
 
+    override suspend fun deletePushToken(): Result<Unit> = runCatching {
+        val session = requireNotNull(storage.readSession()) { "Устройство не зарегистрировано" }
+        api.deletePushToken(session.deviceId)
+        storage.clearPushToken()
+    }
+
     override fun savedSession(): DeviceSession? = storage.readSession()
     override fun isWelcomeCompleted(): Boolean = storage.isWelcomeCompleted()
     override fun markWelcomeCompleted() = storage.markWelcomeCompleted()
 
     override suspend fun getActiveBan(): Result<ActiveBan?> = runCatching {
-        val cachedSession = storage.readSession()
-        if (cachedSession != null && System.currentTimeMillis() - lastRegistrationAtMillis < BAN_REFRESH_INTERVAL_MILLIS) {
-            return@runCatching cachedSession.toActiveBanOrNull()
-        }
-        val response = api.register(
-            RegisterDeviceRequest(
-                fingerprintHash = fingerprintProvider.fingerprintHash(),
-                appVersion = BuildConfig.VERSION_NAME,
-            ),
-        )
-        val refreshedSession = DeviceSession(
-            deviceId = response.deviceId,
-            witnessId = requireNotNull(response.witnessId),
-            chatId = requireNotNull(response.chatId),
-            accessToken = response.accessToken,
-            banLevel = response.banLevel ?: 0,
-        ).also {
-            storage.saveSession(it)
-            lastRegistrationAtMillis = System.currentTimeMillis()
-        }
-        refreshedSession.toActiveBanOrNull()
+        val session = requireNotNull(storage.readSession()) { "Устройство не зарегистрировано" }
+        val response = api.getActiveBan(session.deviceId)
+        storage.saveSession(session.copy(banLevel = response.banLevel ?: 0))
+        response.toDomain()
     }
 
-    private fun DeviceSession.toActiveBanOrNull(): ActiveBan? = takeIf { it.banLevel > 0 }?.let { session ->
-        ActiveBan(
-            id = "current-ban",
-            startedAt = Instant.now(),
-            endsAt = null,
-            number = session.banLevel,
+    private fun ActiveBanResponse.toDomain(): ActiveBan? {
+        if (!active) return null
+        return ActiveBan(
+            id = requireNotNull(id) { "Backend не вернул id активной блокировки" },
+            startedAt = Instant.parse(requireNotNull(issuedAt) { "Backend не вернул issued_at" }),
+            endsAt = expiresAt?.let(Instant::parse),
+            number = requireNotNull(banLevel) { "Backend не вернул ban_level" },
+            reason = reason,
         )
-    }
-
-    private companion object {
-        const val BAN_REFRESH_INTERVAL_MILLIS = 25_000L
     }
 }

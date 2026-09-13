@@ -71,7 +71,6 @@ fun EyewitnessApp() {
         }
         composable(Route.Chat) {
             ChatScreen(
-                onBackClick = navController::navigateUp,
                 deviceRepository = container.deviceRepository,
                 messageRepository = container.messageRepository,
                 realtimeRepository = container.realtimeRepository,
