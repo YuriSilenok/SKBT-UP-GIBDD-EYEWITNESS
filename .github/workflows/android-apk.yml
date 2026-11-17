@@ -43,7 +43,7 @@ jobs:
           log-accepted-android-sdk-licenses: false
       - name: Test, lint and build
         run: |
-          bash ./gradlew --no-daemon --stacktrace \
+          bash ./gradlew --no-daemon --no-configuration-cache --stacktrace \
             testDebugUnitTest lintDebug assembleDebug thirdPartyInventory -PinventoryConfiguration=debugRuntimeClasspath \
             "-PapiBaseUrl=$API_BASE_URL" \
             "-PciVersionCode=$((1000000 + GITHUB_RUN_NUMBER))" \
