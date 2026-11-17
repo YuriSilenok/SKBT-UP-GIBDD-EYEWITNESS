@@ -1,0 +1,134 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a test prerelease (main only)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  API_BASE_URL: ${{ vars.API_BASE_URL || 'https://xn--e1afhclgq.xn--p1ai:4443/' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@4c125117fe7c5aed11272ec4213f602f012f89f2 # v5
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      - name: Install Android SDK
+        run: |
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager 'platforms;android-37.0' 'build-tools;36.0.0' 'platform-tools'
+      - name: Test, lint and build
+        run: |
+          bash ./gradlew --no-daemon --stacktrace \
+            testDebugUnitTest lintDebug assembleDebug thirdPartyInventory -PinventoryConfiguration=debugRuntimeClasspath \
+            "-PapiBaseUrl=$API_BASE_URL" \
+            "-PciVersionCode=$((1000000 + GITHUB_RUN_NUMBER))" \
+            "-PciVersionName=1.0-ci.$GITHUB_RUN_NUMBER"
+      - name: Package build inputs and notices
+        env:
+          APP: EYEWITNESS
+        run: |
+          python3 .github/scripts/package-build.py
+      - name: Save APK build inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: apk-build
+          path: ci-out/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Save test and lint reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: quality-reports
+          path: |
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: apk-build
+          path: input
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Install signing tool
+        run: sdkmanager 'build-tools;36.0.0'
+      - name: Sign with the persistent test key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.APK_TEST_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          : "${KEYSTORE_BASE64:?Set APK_TEST_KEYSTORE_BASE64 in repository secrets}"
+          key="$RUNNER_TEMP/apk-test.keystore"
+          trap 'rm -f "$key"' EXIT
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$key"
+          mkdir -p release
+          signer="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$signer" sign --ks "$key" --ks-key-alias androiddebugkey \
+            --ks-pass pass:android --key-pass pass:android \
+            --out release/EYEWITNESS-test.apk input/input.apk
+          "$signer" verify --verbose --print-certs release/EYEWITNESS-test.apk
+          cp input/THIRD-PARTY-NOTICES.zip input/BUILD-INFO.json release/
+          cd release
+          sha256sum EYEWITNESS-test.apk THIRD-PARTY-NOTICES.zip BUILD-INFO.json > SHA256SUMS.txt
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          tag="test-$GITHUB_RUN_NUMBER"
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Автоматическая тестовая сборка. Только вымышленные сведения.
+          APK имеет applicationId с .test и постоянную тестовую подпись.
+          Сервер, версия и commit указаны в BUILD-INFO.json.
+          Тестовый стенд ограничен по IP; на телефоне используйте разрешённую сеть.
+          THIRD-PARTY-NOTICES.zip содержит состав зависимостей и лицензии.
+          Это не рабочий релиз для RuStore.
+          NOTES
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$COMMIT_SHA" --prerelease \
+              --title "EYEWITNESS — тестовая сборка $GITHUB_RUN_NUMBER" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          gh release upload "$tag" release/EYEWITNESS-test.apk \
+            release/THIRD-PARTY-NOTICES.zip release/BUILD-INFO.json \
+            release/SHA256SUMS.txt --clobber

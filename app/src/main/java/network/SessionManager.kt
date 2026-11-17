@@ -28,18 +28,14 @@ class SessionManager(
         }
 
     var accessToken: String?
-        get() =
-            preferences.getString(
-                KEY_ACCESS_TOKEN,
-                null
-            )
+        get() {
+            val stored = preferences.getString(KEY_ACCESS_TOKEN, null) ?: return null
+            val token = com.example.gibddochevidets.SecretStore.decrypt(stored) ?: return null
+            if (!stored.startsWith("v1:")) preferences.edit().putString(KEY_ACCESS_TOKEN, com.example.gibddochevidets.SecretStore.encrypt(token)).apply()
+            return token
+        }
         set(value) {
-            preferences.edit()
-                .putString(
-                    KEY_ACCESS_TOKEN,
-                    value
-                )
-                .apply()
+            preferences.edit().putString(KEY_ACCESS_TOKEN, value?.let { com.example.gibddochevidets.SecretStore.encrypt(it) }).apply()
         }
 
     var fingerprintHash: String?
@@ -56,19 +52,6 @@ class SessionManager(
                 )
                 .apply()
         }
-
-    fun isRegistered(): Boolean {
-
-        return !deviceId.isNullOrBlank() &&
-                !accessToken.isNullOrBlank()
-    }
-
-    fun clear() {
-
-        preferences.edit()
-            .clear()
-            .apply()
-    }
 
     companion object {
 

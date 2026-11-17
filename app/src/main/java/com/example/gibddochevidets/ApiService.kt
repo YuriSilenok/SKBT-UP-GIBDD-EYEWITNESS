@@ -26,8 +26,18 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 
 interface ApiService {
+    @GET("api/v1/chats/{observerId}/receipts")
+    suspend fun receipts(@Path("observerId") observerId: String,
+        @Header("Authorization") authorization: String): Map<String, List<Map<String, String>>>
+    @POST("api/v1/privacy/consent")
+    suspend fun consent(@Header("Authorization") authorization: String, @Body payload: Map<String, String>): Map<String, String>
+
+    @retrofit2.http.DELETE("api/v1/privacy/consent")
+    suspend fun withdrawConsent(@Header("Authorization") authorization: String): Map<String, Any>
+
     @POST("api/v1/devices/register")
     suspend fun registerDevice(
+        @Header("Authorization") authorization: String? = null,
         @Header("X-Client-App") clientApp: String,
         @Body request: RegisterDeviceRequest
     ): RegisterResponse

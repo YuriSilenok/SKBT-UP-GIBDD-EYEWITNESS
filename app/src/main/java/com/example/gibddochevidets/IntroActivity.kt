@@ -43,13 +43,6 @@ class IntroActivity : Activity() {
         repository = ApiRepository(applicationContext)
         prefs = getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
 
-        // Запрос разрешения на уведомления для Android 13+
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 100)
-            }
-        }
-
         // Если интро уже пропущен или устройство уже зарегистрировано — запускаем чат (с проверками)
         val deviceId = repository.getDeviceId()
         if (prefs.getBoolean("skip_intro", false) ) {
@@ -131,11 +124,7 @@ class IntroActivity : Activity() {
     override fun onResume() {
         super.onResume()
         val filter = IntentFilter("BAN_ENDED")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(banEndedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(banEndedReceiver, filter)
-        }
+        androidx.core.content.ContextCompat.registerReceiver(this, banEndedReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     override fun onPause() {
@@ -147,32 +136,13 @@ class IntroActivity : Activity() {
     // Обработка результата запроса разрешений
     // ============================================================
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 100) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                // Разрешение получено – можно показывать уведомления
-            } else {
-                // Разрешение отклонено – уведомления не будут показываться
-            }
-        }
-    }
-
-    // ============================================================
-    // Создание экрана приветствия
-    // ============================================================
-
     private fun createScreen() {
         root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
         root.setBackgroundColor(Color.rgb(245, 248, 251))
 
         root.setOnApplyWindowInsetsListener { view, insets ->
-            val systemBars = insets.getInsets(WindowInsets.Type.systemBars())
+            val systemBars = androidx.core.view.WindowInsetsCompat.toWindowInsetsCompat(insets).getInsets(androidx.core.view.WindowInsetsCompat.Type.systemBars())
             view.setPadding(
                 dp(20),
                 systemBars.top + dp(20),
@@ -192,7 +162,7 @@ class IntroActivity : Activity() {
 
         // --- Заголовок ---
         val title = TextView(this)
-        title.text = "ГИБДД-Очевидец"
+        title.text = "Трезвый водитель 44"
         title.textSize = 25f
         title.setTextColor(Color.rgb(25, 40, 55))
         title.typeface = Typeface.create("sans", Typeface.BOLD)
@@ -235,7 +205,7 @@ class IntroActivity : Activity() {
                 "с признаками опьянения, которые управляют транспортом.\n\n" +
                 "В сообщении можно указать номер, марку, цвет автомобиля, " +
                 "направление движения, отправить геолокацию, фото или видео.\n\n" +
-                "Вся поступившая информация обрабатывается роботом."
+                "Сообщения поступают уполномоченным сотрудникам Госавтоинспекции. Ответ по существу не направляется."
         informationText.textSize = 16f
         informationText.setTextColor(Color.rgb(55, 65, 75))
         informationText.setLineSpacing(dp(3).toFloat(), 1.08f)

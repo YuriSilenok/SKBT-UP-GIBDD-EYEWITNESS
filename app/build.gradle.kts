@@ -1,7 +1,7 @@
+import java.net.URI
+
 plugins {
-    id("com.google.gms.google-services")
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.compose)
 }
 
 android {
@@ -11,11 +11,17 @@ android {
     }
 
     defaultConfig {
+        manifestPlaceholders["appLabel"] = "@string/app_name"
+        val apiBaseUrl = providers.gradleProperty("apiBaseUrl").orElse("https://xn--e1afhclgq.xn--p1ai:4401/").get()
+        val parsed = URI(apiBaseUrl)
+        require(parsed.scheme == "https" && parsed.host != null && parsed.userInfo == null && apiBaseUrl.endsWith("/")) { "API base URL must be an HTTPS URL ending with /" }
+        buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+
         applicationId = "com.example.gibddochevidets"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = providers.gradleProperty("ciVersionCode").map { it.toInt() }.orElse(1).get()
+        versionName = providers.gradleProperty("ciVersionName").orElse("1.0").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // Оставляем только реальные архитектуры телефонов
@@ -24,6 +30,11 @@ android {
     }
 
     buildTypes {
+        debug {
+            manifestPlaceholders["appLabel"] = "Трезвый водитель 44 (тест)"
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+        }
         release {
             isMinifyEnabled = true          // ✅ включает сжатие кода
             isShrinkResources = true        // ✅ удаляет неиспользуемые ресурсы
@@ -40,13 +51,11 @@ android {
     }
 
     buildFeatures {
-        compose = true
+        buildConfig = true
     }
 }
 
 dependencies {
-    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
-    implementation("com.google.firebase:firebase-messaging")
     // ============================================================
     // MAP
     // ============================================================
@@ -55,11 +64,9 @@ dependencies {
     // ============================================================
     // ANDROIDX
     // ============================================================
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.1")
-    implementation("com.google.android.gms:play-services-location:21.3.0")
 
     // ============================================================
     // COROUTINES
@@ -82,21 +89,24 @@ dependencies {
     // ============================================================
     // COMPOSE
     // ============================================================
-    implementation(platform(libs.androidx.compose.bom))
-    implementation(libs.androidx.activity.compose)
-    implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.compose.ui)
-    implementation(libs.androidx.compose.ui.graphics)
-    implementation(libs.androidx.compose.ui.tooling.preview)
 
     // ============================================================
     // TESTS
     // ============================================================
     testImplementation(libs.junit)
-    androidTestImplementation(platform(libs.androidx.compose.bom))
-    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
-    debugImplementation(libs.androidx.compose.ui.test.manifest)
-    debugImplementation(libs.androidx.compose.ui.tooling)
+}
+
+// Reproducible third-party inventory for the distributed Android application.
+tasks.register("thirdPartyInventory") {
+    doLast {
+        val dependencies = configurations.getByName(providers.gradleProperty("inventoryConfiguration").orElse("releaseRuntimeClasspath").get()).incoming.resolutionResult.allComponents
+            .mapNotNull { component -> (component.id as? org.gradle.api.artifacts.component.ModuleComponentIdentifier)?.let {
+                "${it.group}:${it.module}:${it.version}"
+            } }.distinct().sorted()
+        val output = layout.buildDirectory.file("reports/licenses/dependencies.txt").get().asFile
+        output.parentFile.mkdirs()
+        output.writeText(dependencies.joinToString("\n") + "\n")
+    }
 }

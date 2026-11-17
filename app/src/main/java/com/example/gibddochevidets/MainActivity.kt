@@ -33,6 +33,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!PrivacyActivity.hasLocalConsent(this)) {
+            startActivity(Intent(this, PrivacyActivity::class.java)); finish(); return
+        }
 
         setContentView(
             R.layout.activity_main
@@ -72,6 +75,7 @@ class MainActivity : ComponentActivity() {
                 ) {
 
                     apiRepository.registerDevice()
+                    apiRepository.grantPrivacyConsent()
                 }
 
                 if (

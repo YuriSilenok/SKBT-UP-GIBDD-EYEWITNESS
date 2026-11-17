@@ -3,6 +3,7 @@
 <manifest
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- ====================================================== -->
     <!-- INTERNET -->
@@ -31,7 +32,6 @@
     <!-- ====================================================== -->
     <!-- STORAGE -->
     <!-- ====================================================== -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -53,21 +53,17 @@
     <application
 
         android:extractNativeLibs="false"
-        android:allowBackup="true"
-        android:label="@string/app_name"
-        android:icon="@drawable/logo_gibdd"
+        android:allowBackup="false"
+        android:label="${appLabel}"
+        android:icon="@drawable/logo_sober_driver"
         android:theme="@style/Theme.GIBDDOchevidets">
+        <activity android:name=".PrivacyActivity" android:exported="false" />
+        <activity android:name=".LegalActivity" android:exported="false" />
+        <activity android:name=".ReportActivity" android:exported="false" />
 
         <!-- ================================================== -->
         <!-- FILE PROVIDER -->
         <!-- ================================================== -->
-        <service
-            android:name=".MyFirebaseMessagingService"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.google.firebase.MESSAGING_EVENT" />
-            </intent-filter>
-        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

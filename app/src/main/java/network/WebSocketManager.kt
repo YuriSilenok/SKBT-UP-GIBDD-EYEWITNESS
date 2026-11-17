@@ -1,6 +1,6 @@
 package com.example.gibddochevidets.network
 
-import android.util.Log
+import com.example.gibddochevidets.PrivacyLog as Log
 import com.google.gson.Gson
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -22,12 +22,12 @@ class WebSocketManager(
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .writeTimeout(5, TimeUnit.MINUTES)
         .addInterceptor(HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            level = HttpLoggingInterceptor.Level.NONE
         })
         .build()
 
     fun connect() {
-        val url = "wss://xn--e1afhclgq.xn--p1ai:4401/api/v1/realtime"
+        val url = com.example.gibddochevidets.BuildConfig.API_BASE_URL.replace("https://", "wss://") + "api/v1/realtime"
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")

@@ -11,12 +11,9 @@ import java.io.IOException
 import android.content.Context
 import android.os.Environment
 import android.app.AlertDialog
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
-import com.google.android.gms.tasks.CancellationTokenSource
 import android.content.ContentValues
 import android.util.LruCache
-import android.util.Log
+import com.example.gibddochevidets.PrivacyLog as Log
 import android.Manifest
 import android.app.Activity
 import android.app.Dialog
@@ -235,11 +232,7 @@ class ChatActivity : Activity() {
         super.onResume()
         flushOfflineQueue()
         val filter = IntentFilter("BAN_ENDED")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(banEndedReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(banEndedReceiver, filter)
-        }
+        androidx.core.content.ContextCompat.registerReceiver(this, banEndedReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
     }
 
     override fun onPause() {
@@ -268,10 +261,7 @@ class ChatActivity : Activity() {
     private lateinit var locationManager: LocationManager
 
     private var locationListener: LocationListener? = null
-    private lateinit var fusedLocationClient:
-            com.google.android.gms.location.FusedLocationProviderClient
-
-    // ============================================================
+// ============================================================
     // CONSTANTS
     // ============================================================
 
@@ -324,6 +314,13 @@ class ChatActivity : Activity() {
         super.onCreate(
             savedInstanceState
         )
+        if (!PrivacyActivity.hasLocalConsent(this)) {
+            startActivity(Intent(this, PrivacyActivity::class.java)); finish(); return
+        }
+        val cutoff = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000
+        cacheDir.walkBottomUp().filter { it.isFile && it.lastModified() < cutoff }.forEach { it.delete() }
+        getExternalFilesDir(null)?.walkBottomUp()?.filter { it.isFile && it.lastModified() < cutoff }?.forEach { it.delete() }
+
 
 
         cameraPhotoUri =
@@ -348,11 +345,17 @@ class ChatActivity : Activity() {
             getSystemService(
                 LOCATION_SERVICE
             ) as LocationManager
-        fusedLocationClient =
-            LocationServices
-                .getFusedLocationProviderClient(this)
-
-        initViews()
+initViews()
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        actions.addView(android.widget.Button(this).apply {
+            text = "Сообщить о событии"
+            setOnClickListener { startActivity(Intent(this@ChatActivity, ReportActivity::class.java)) }
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        actions.addView(android.widget.Button(this).apply {
+            text = "Политика и удаление"
+            setOnClickListener { startActivity(Intent(this@ChatActivity, PrivacyActivity::class.java)) }
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        chatRoot.addView(actions, 1)
         contextButtonsContainer.visibility = View.GONE
         setupSystemInsets()
 
@@ -510,13 +513,13 @@ class ChatActivity : Activity() {
                 insets ->
 
             val systemBars =
-                insets.getInsets(
-                    WindowInsets.Type.systemBars()
+                androidx.core.view.WindowInsetsCompat.toWindowInsetsCompat(insets, view).getInsets(
+                    androidx.core.view.WindowInsetsCompat.Type.systemBars()
                 )
 
             val ime =
-                insets.getInsets(
-                    WindowInsets.Type.ime()
+                androidx.core.view.WindowInsetsCompat.toWindowInsetsCompat(insets, view).getInsets(
+                    androidx.core.view.WindowInsetsCompat.Type.ime()
                 )
 
             val bottom =
@@ -602,7 +605,10 @@ class ChatActivity : Activity() {
         val json = offlinePrefs.getString(PREF_OFFLINE_QUEUE, null) ?: return mutableListOf()
         return try {
             val type = object : com.google.gson.reflect.TypeToken<MutableList<OfflineQueueItem>>() {}.type
-            Gson().fromJson<MutableList<OfflineQueueItem>>(json, type) ?: mutableListOf()
+            (Gson().fromJson<MutableList<OfflineQueueItem>>(json, type) ?: mutableListOf()).filter {
+                val created = it.id.toLongOrNull() ?: 0L
+                System.currentTimeMillis() - created in 0 until 30L * 24 * 60 * 60 * 1000
+            }.toMutableList()
         } catch (_: Exception) {
             mutableListOf()
         }
@@ -749,6 +755,8 @@ class ChatActivity : Activity() {
     }
     private fun handleWebSocketEvent(event: String, data: Map<String, Any?>) {
         when (event) {
+            "receipt_confirmed" -> showReceiptNotice(data["message_id"].toString())
+
             "connected" -> {
                 val deviceId = data["device_id"] as? String
                 val role = data["role"] as? String
@@ -1408,7 +1416,7 @@ class ChatActivity : Activity() {
 
         root.addView(
             createLocationButton(
-                "🗺  Выбрать на карте",
+                "🗺  Ввести координаты",
                 false
             ) {
                 openMapPicker()
@@ -3070,147 +3078,35 @@ class ChatActivity : Activity() {
 // ============================================================
 
     private fun sendCurrentLocation() {
-
-        if (!hasLocationPermission()) {
-
-            requestLocationPermission()
-
-            return
-        }
-
-        if (isSending) {
-            return
-        }
-
+        if (!hasLocationPermission()) { requestLocationPermission(); return }
         closeAttachmentPanel()
-
-        Toast.makeText(
-            this,
-            "Получаю местоположение...",
-            Toast.LENGTH_SHORT
-        ).show()
-
-        try {
-
-            // ========================================================
-            // СНАЧАЛА БЕРЁМ ПОСЛЕДНЮЮ ИЗВЕСТНУЮ КООРДИНАТУ
-            // Это намного быстрее GPS-запроса.
-            // ========================================================
-
-            fusedLocationClient
-                .lastLocation
-                .addOnSuccessListener { location ->
-
-                    if (
-                        location != null &&
-                        location.latitude in -90.0..90.0 &&
-                        location.longitude in -180.0..180.0
-                    ) {
-
-                        // Есть готовая координата —
-                        // отправляем сразу.
-
-                        sendLocation(
-                            location.latitude,
-                            location.longitude
-                        )
-
-                        return@addOnSuccessListener
-                    }
-
-                    // ====================================================
-                    // ЕСЛИ ПОСЛЕДНЕЙ КООРДИНАТЫ НЕТ —
-                    // ЗАПРАШИВАЕМ НОВУЮ
-                    // ====================================================
-
-                    requestFreshLocation()
-
-                }
-                .addOnFailureListener {
-
-                    requestFreshLocation()
-                }
-
-        } catch (
-            e: SecurityException
-        ) {
-
-            Toast.makeText(
-                this,
-                "Нет разрешения на геолокацию",
-                Toast.LENGTH_LONG
-            ).show()
-
-        } catch (
-            e: Exception
-        ) {
-
-            Toast.makeText(
-                this,
-                "Не удалось получить геопозицию: ${e.message}",
-                Toast.LENGTH_LONG
-            ).show()
-        }
+        requestFreshLocation()
     }
+
     private fun requestFreshLocation() {
-
-        if (!hasLocationPermission()) {
-            return
-        }
-
+        if (!hasLocationPermission()) return
+        val manager = getSystemService(LOCATION_SERVICE) as LocationManager
         try {
-
-            val cancellationTokenSource =
-                CancellationTokenSource()
-
-            fusedLocationClient
-                .getCurrentLocation(
-                    Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-                    cancellationTokenSource.token
-                )
-                .addOnSuccessListener { location ->
-
-                    if (location != null) {
-
-                        sendLocation(
-                            location.latitude,
-                            location.longitude
-                        )
-
-                    } else {
-
-                        getLastKnownLocationForSending()
-                    }
+            if (!manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+                Toast.makeText(this, "Включите GPS или введите координаты вручную", Toast.LENGTH_LONG).show()
+                return
+            }
+            val listener = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    manager.removeUpdates(this)
+                    sendLocation(location.latitude, location.longitude)
                 }
-                .addOnFailureListener {
-
-                    getLastKnownLocationForSending()
-                }
-
-        } catch (
-            e: SecurityException
-        ) {
-
-            Toast.makeText(
-                this,
-                "Нет разрешения на геолокацию",
-                Toast.LENGTH_LONG
-            ).show()
-
-        } catch (
-            e: Exception
-        ) {
-
-            Toast.makeText(
-                this,
-                "Не удалось получить геопозицию",
-                Toast.LENGTH_LONG
-            ).show()
+                override fun onProviderEnabled(provider: String) {}
+                override fun onProviderDisabled(provider: String) {}
+                @Deprecated("Deprecated in Android")
+                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+            }
+            manager.requestSingleUpdate(LocationManager.GPS_PROVIDER, listener, Looper.getMainLooper())
+            Handler(Looper.getMainLooper()).postDelayed({ manager.removeUpdates(listener) }, 30_000)
+        } catch (_: SecurityException) {
+            Toast.makeText(this, "Нужен доступ к геолокации", Toast.LENGTH_LONG).show()
         }
     }
-    // ============================================================
-// SEND STATIC LOCATION MESSAGE
-// ============================================================
 
     private fun sendStaticLocationMessage(
         latitude: Double,
@@ -3351,75 +3247,6 @@ class ChatActivity : Activity() {
 
 // ============================================================
 // LAST KNOWN LOCATION FALLBACK
-// ============================================================
-
-    private fun getLastKnownLocationForSending() {
-
-        if (!hasLocationPermission()) {
-            return
-        }
-
-        try {
-
-            fusedLocationClient
-                .lastLocation
-                .addOnSuccessListener { location ->
-
-                    if (
-                        location != null
-                    ) {
-
-                        sendStaticLocationMessage(
-                            location.latitude,
-                            location.longitude
-                        )
-
-                    } else {
-
-                        Toast.makeText(
-                            this,
-                            "Не удалось определить местоположение. Включи GPS и геолокацию.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }
-                .addOnFailureListener { error ->
-
-                    Toast.makeText(
-                        this,
-                        "Не удалось получить геопозицию: ${
-                            error.message ?: "неизвестная ошибка"
-                        }",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-
-        } catch (
-            e: SecurityException
-        ) {
-
-            Toast.makeText(
-                this,
-                "Нет разрешения на геолокацию",
-                Toast.LENGTH_LONG
-            ).show()
-
-        } catch (
-            e: Exception
-        ) {
-
-            Toast.makeText(
-                this,
-                "Ошибка геолокации: ${
-                    e.message ?: "неизвестная ошибка"
-                }",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
-
-    // ============================================================
-// SEND STATIC LOCATION
 // ============================================================
 
     private fun sendLocation(
@@ -4024,6 +3851,10 @@ class ChatActivity : Activity() {
                     }
                     flushOfflineQueue()
                     loadNewMessages()
+                    try {
+                        val receipts = withContext(Dispatchers.IO) { repository.receiptNotifications() }
+                        receipts.forEach { it["message_id"]?.let { id -> showReceiptNotice(id) } }
+                    } catch (_: Exception) {}
                 }
             }
     }
@@ -4776,20 +4607,6 @@ class ChatActivity : Activity() {
     }
 
     // Вспомогательная функция для извлечения и отображения длительности
-    private fun showVideoDuration(file: File, textView: TextView) {
-        try {
-            val retriever = MediaMetadataRetriever()
-            retriever.setDataSource(file.absolutePath)
-            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            retriever.release()
-            val seconds = (durationMs / 1000) % 60
-            val minutes = (durationMs / 1000) / 60
-            val formatted = String.format("%02d:%02d", minutes, seconds)
-            textView.text = formatted
-        } catch (e: Exception) {
-            Log.e("MEDIA_DEBUG", "Ошибка получения длительности", e)
-        }
-    }
     private fun openVideoFullscreen(messageId: String) {
         val dialog = Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
         val videoView = VideoView(this)
@@ -5316,35 +5133,8 @@ class ChatActivity : Activity() {
         )
 
         locationContainer.setOnClickListener {
-
-            val uri =
-                Uri.parse(
-                    "geo:${location.latitude},${location.longitude}" +
-                            "?q=${location.latitude},${location.longitude}"
-                )
-
-            val intent =
-                Intent(
-                    Intent.ACTION_VIEW,
-                    uri
-                )
-
-            try {
-
-                startActivity(
-                    intent
-                )
-
-            } catch (
-                _: Exception
-            ) {
-
-                Toast.makeText(
-                    this,
-                    "На устройстве нет приложения карт",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
+            AlertDialog.Builder(this).setTitle("Координаты события")
+                .setMessage("${location.latitude}, ${location.longitude}").setPositiveButton("Закрыть", null).show()
         }
     }
 
@@ -5702,5 +5492,28 @@ class ChatActivity : Activity() {
 
         super.onDestroy()
     }
+    private fun showReceiptNotice(messageId: String) {
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            val prefs = getSharedPreferences("receipt_notices", MODE_PRIVATE)
+            if (prefs.getBoolean(messageId, false)) return@runOnUiThread
+            prefs.edit().putBoolean(messageId, true).apply()
+            messagesContainer.addView(TextView(this).apply {
+                text = "Ваше сообщение зарегистрировано и передано в компетентные органы\nНомер: $messageId"
+                setPadding(dp(12), dp(12), dp(12), dp(12))
+            })
+        }
+    }
+
+    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
+        menu.add("Политика и удаление данных").setOnMenuItemClickListener {
+            startActivity(Intent(this, PrivacyActivity::class.java)); true
+        }
+        menu.add("Сообщить о событии").setOnMenuItemClickListener {
+            startActivity(Intent(this, ReportActivity::class.java)); true
+        }
+        return true
+    }
+
 }
 

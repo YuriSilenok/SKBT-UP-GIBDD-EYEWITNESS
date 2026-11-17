@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
-import android.util.Log
+import com.example.gibddochevidets.PrivacyLog as Log
 import com.example.gibddochevidets.BanActivity
 import com.example.gibddochevidets.data.DeviceFingerprint
 import com.example.gibddochevidets.data.SessionManager
@@ -27,6 +27,16 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 class ApiRepository(context: Context) {
+    suspend fun receiptNotifications(): List<Map<String, String>> = api.receipts(getRequiredDeviceId(), "Bearer ${getRequiredToken()}")["receipts"].orEmpty()
+    suspend fun grantPrivacyConsent() {
+        val prefs = appContext.getSharedPreferences("privacy", Context.MODE_PRIVATE)
+        val accepted = prefs.getLong("accepted_at", 0)
+        if (prefs.getLong("submitted_at", -1) == accepted) return
+        api.consent("Bearer ${getRequiredToken()}", mapOf("version" to com.example.gibddochevidets.PrivacyActivity.VERSION,
+            "clicked_at" to java.time.Instant.ofEpochMilli(accepted).toString()))
+        prefs.edit().putLong("submitted_at", accepted).apply()
+    }
+    suspend fun withdrawPrivacyConsent() = api.withdrawConsent("Bearer ${getRequiredToken()}")
 
     private val appContext =
         context.applicationContext
@@ -43,7 +53,7 @@ class ApiRepository(context: Context) {
     private val api: ApiService =
         Retrofit.Builder()
             .baseUrl(
-                "https://xn--e1afhclgq.xn--p1ai:4401/"
+                com.example.gibddochevidets.BuildConfig.API_BASE_URL
             )
             .client(
                 OkHttpClient.Builder()
@@ -81,20 +91,13 @@ class ApiRepository(context: Context) {
         val fingerprint =
             DeviceFingerprint.get(appContext)
 
-        var pushToken = getFcmToken()
-        if (pushToken == null) {
-            withTimeoutOrNull(5000L) {
-                while (pushToken == null) {
-                    delay(200)
-                    pushToken = getFcmToken()
-                }
-            }
-        }
+        val pushToken: String? = null
 
         return try {
 
             val result =
                 api.registerDevice(
+                    authorization = session.accessToken?.let { "Bearer $it" },
                     clientApp = clientApp,
                     request =
                         RegisterDeviceRequest(
@@ -241,22 +244,16 @@ class ApiRepository(context: Context) {
         val deviceId =
             getRequiredDeviceId()
 
-        return api.getMessages(
-            authorization =
-                "Bearer $token",
-
-            clientApp =
-                clientApp,
-
-            observerDeviceId =
-                deviceId,
-
-            afterMessageId =
-                afterMessageId,
-
-            limit =
-                100
-        ).messages
+        val all = mutableListOf<MessageResponse>()
+        var cursor = afterMessageId
+        while (true) {
+            val page = api.getMessages(authorization = "Bearer $token", clientApp = clientApp,
+                observerDeviceId = deviceId, afterMessageId = cursor, limit = 100).messages
+            all.addAll(page)
+            if (page.size < 100 || page.lastOrNull()?.message_id == cursor) break
+            cursor = page.last().message_id
+        }
+        return all.distinctBy { it.message_id }
     }
 
 
@@ -501,60 +498,6 @@ class ApiRepository(context: Context) {
     // MEDIA ПО STORAGE KEY
     // ============================================================
 
-    suspend fun sendMedia(
-        storageKey: String,
-        mimeType: String
-    ): MessageResponse {
-
-        val token =
-            getRequiredToken()
-
-        requireRegistered()
-
-        require(
-            storageKey.isNotBlank()
-        ) {
-            "storageKey пустой"
-        }
-
-        require(
-            mimeType.isNotBlank()
-        ) {
-            "mimeType пустой"
-        }
-
-        return try {
-
-            api.sendMedia(
-                authorization =
-                    "Bearer $token",
-
-                clientApp =
-                    clientApp,
-
-                request =
-                    MediaRequest(
-                        storage_key =
-                            storageKey,
-
-                        mime_type =
-                            mimeType
-                    )
-            )
-
-        } catch (e: HttpException) {
-
-            handleBanException(e)
-
-            throw e
-        }
-    }
-
-
-    // ============================================================
-    // ЗАГРУЗКА ФОТО / ВИДЕО
-    // ============================================================
-
     suspend fun uploadMedia(
         uri: Uri
     ): MessageResponse {
@@ -761,52 +704,6 @@ class ApiRepository(context: Context) {
 
     // ============================================================
     // LIVE — ПОЛУЧЕНИЕ ТОЧЕК
-    // ============================================================
-
-    suspend fun getLiveLocationPoints(
-        messageId: String,
-        afterRecordedAt: String? = null,
-        limit: Int = 100
-    ): List<LiveLocationPointResponse> {
-
-        val token =
-            getRequiredToken()
-
-        requireRegistered()
-
-        require(
-            messageId.isNotBlank()
-        ) {
-            "messageId пустой"
-        }
-
-        require(
-            limit in 1..1000
-        ) {
-            "limit должен быть от 1 до 1000"
-        }
-
-        return api.getLiveLocationPoints(
-            authorization =
-                "Bearer $token",
-
-            clientApp =
-                clientApp,
-
-            messageId =
-                messageId,
-
-            afterRecordedAt =
-                afterRecordedAt,
-
-            limit =
-                limit
-        ).points
-    }
-
-
-    // ============================================================
-    // ОБРАБОТКА БАНА
     // ============================================================
 
     private fun handleBanException(
@@ -1020,11 +917,7 @@ class ApiRepository(context: Context) {
     fun getAccessToken(): String? =
         session.accessToken
 
-    fun isRegistered(): Boolean =
-        session.isRegistered()
-
-
-    private fun getRequiredToken(): String =
+private fun getRequiredToken(): String =
         session.accessToken
             ?: throw IllegalStateException(
                 "Access token is missing"
@@ -1036,12 +929,6 @@ class ApiRepository(context: Context) {
             ?: throw IllegalStateException(
                 "Device is not registered"
             )
-
-
-    private fun getFcmToken(): String? {
-        return appContext.getSharedPreferences("fcm_prefs", Context.MODE_PRIVATE)
-            .getString("fcm_token", null)
-    }
 
 
     private fun requireRegistered() {
