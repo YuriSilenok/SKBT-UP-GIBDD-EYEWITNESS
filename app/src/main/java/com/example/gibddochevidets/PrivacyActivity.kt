@@ -34,7 +34,10 @@ class PrivacyActivity : Activity() {
         }
         enter.setOnClickListener {
             // Record the active action before creating any technical identity or calling the server.
-            getSharedPreferences("privacy", MODE_PRIVATE).edit().putString("version", VERSION).putLong("accepted_at", checkedAt).apply()
+            getSharedPreferences("privacy", MODE_PRIVATE).edit().putString("version", VERSION)
+                .putString("policy_url", BuildConfig.PRIVACY_POLICY_URL)
+                .putString("consent_url", BuildConfig.PRIVACY_CONSENT_URL)
+                .putLong("accepted_at", checkedAt).remove("submitted_at").apply()
             startActivity(Intent(this, MainActivity::class.java)); finish()
         }
         root.addView(enter)
@@ -68,10 +71,13 @@ class PrivacyActivity : Activity() {
     }
     override fun onDestroy() { scope.cancel(); super.onDestroy() }
     companion object {
-        const val VERSION = "2026-11-17-v1"
+        const val VERSION = BuildConfig.CONSENT_VERSION
         fun hasLocalConsent(context: Context): Boolean {
             val p = context.getSharedPreferences("privacy", Context.MODE_PRIVATE)
-            return p.getString("version", null) == VERSION && System.currentTimeMillis() - p.getLong("accepted_at", 0) in 0 until 30L * 24 * 60 * 60 * 1000
+            return p.getString("version", null) == VERSION &&
+                p.getString("policy_url", null) == BuildConfig.PRIVACY_POLICY_URL &&
+                p.getString("consent_url", null) == BuildConfig.PRIVACY_CONSENT_URL &&
+                System.currentTimeMillis() - p.getLong("accepted_at", 0) in 0 until 30L * 24 * 60 * 60 * 1000
         }
     }
 }

@@ -7,9 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish a test prerelease (main only)
+        description: Publish a GitHub Release (main only)
         type: boolean
         default: true
+
+      build_variant:
+        description: Android build type (release requires production configuration and signing secrets)
+        type: choice
+        options: [debug, release]
+        default: debug
 
 permissions:
   contents: read
@@ -19,7 +25,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  API_BASE_URL: ${{ vars.API_BASE_URL || 'https://xn--e1afhclgq.xn--p1ai:4443/' }}
+  APP: EYEWITNESS
+  BUILD_VARIANT: ${{ inputs.build_variant || vars.APK_BUILD_VARIANT || 'debug' }}
+  API_BASE_URL: ${{ vars.API_BASE_URL }}
+  PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
+  PRIVACY_CONSENT_URL: ${{ vars.PRIVACY_CONSENT_URL }}
+  PRIVACY_REGULATION_URL: ${{ vars.PRIVACY_REGULATION_URL }}
+  CONSENT_VERSION: ${{ vars.CONSENT_VERSION }}
 
 jobs:
   build:
@@ -43,16 +55,28 @@ jobs:
           log-accepted-android-sdk-licenses: false
       - name: Test, lint and build
         run: |
+          case "$BUILD_VARIANT" in debug) variant=Debug;; release) variant=Release;; *) exit 1;; esac
+          if [[ "$BUILD_VARIANT" == release ]]; then
+            : "${API_BASE_URL:?Set production API_BASE_URL}"
+            if [[ "$APP" == EYEWITNESS ]]; then
+              : "${PRIVACY_POLICY_URL:?Set production PRIVACY_POLICY_URL}"
+              : "${PRIVACY_CONSENT_URL:?Set production PRIVACY_CONSENT_URL}"
+              : "${PRIVACY_REGULATION_URL:?Set production PRIVACY_REGULATION_URL}"
+              : "${CONSENT_VERSION:?Set production CONSENT_VERSION}"
+            fi
+          fi
           bash ./gradlew --no-daemon --no-configuration-cache --stacktrace \
-            testDebugUnitTest lintDebug assembleDebug thirdPartyInventory -PinventoryConfiguration=debugRuntimeClasspath \
+            testDebugUnitTest "lint${variant}" "assemble${variant}" thirdPartyInventory \
+            "-PinventoryConfiguration=${BUILD_VARIANT}RuntimeClasspath" \
             "-PapiBaseUrl=$API_BASE_URL" \
+            "-PprivacyPolicyUrl=$PRIVACY_POLICY_URL" \
+            "-PprivacyConsentUrl=$PRIVACY_CONSENT_URL" \
+            "-PprivacyRegulationUrl=$PRIVACY_REGULATION_URL" \
+            "-PconsentVersion=$CONSENT_VERSION" \
             "-PciVersionCode=$((1000000 + GITHUB_RUN_NUMBER))" \
             "-PciVersionName=1.0-ci.$GITHUB_RUN_NUMBER"
       - name: Package build inputs and notices
-        env:
-          APP: EYEWITNESS
-        run: |
-          python3 .github/scripts/package-build.py
+        run: python3 .github/scripts/package-build.py
       - name: Save APK build inputs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -92,45 +116,65 @@ jobs:
         with:
           packages: 'build-tools;36.0.0'
           log-accepted-android-sdk-licenses: false
-      - name: Sign with the persistent test key
+      - name: Sign APK
         env:
-          KEYSTORE_BASE64: ${{ secrets.APK_TEST_KEYSTORE_BASE64 }}
+          KEYSTORE_BASE64: ${{ secrets[env.BUILD_VARIANT == 'release' && 'APK_RELEASE_KEYSTORE_BASE64' || 'APK_TEST_KEYSTORE_BASE64'] }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.APK_RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.APK_RELEASE_KEY_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.APK_RELEASE_KEY_ALIAS }}
         run: |
           set -euo pipefail
-          : "${KEYSTORE_BASE64:?Set APK_TEST_KEYSTORE_BASE64 in repository secrets}"
-          key="$RUNNER_TEMP/apk-test.keystore"
+          : "${KEYSTORE_BASE64:?Set the signing keystore secret for this build type}"
+          if [[ "$BUILD_VARIANT" == release ]]; then
+            : "${RELEASE_STORE_PASSWORD:?Missing production store password}"
+            : "${RELEASE_KEY_PASSWORD:?Missing production key password}"
+            : "${RELEASE_KEY_ALIAS:?Missing production key alias}"
+            export KS_PASS="$RELEASE_STORE_PASSWORD" KEY_PASS="$RELEASE_KEY_PASSWORD"
+            alias="$RELEASE_KEY_ALIAS"
+            kind=release
+          else
+            export KS_PASS=android KEY_PASS=android
+            alias=androiddebugkey
+            kind=test
+          fi
+          key="$RUNNER_TEMP/apk-signing.keystore"
           trap 'rm -f "$key"' EXIT
           umask 077
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$key"
           mkdir -p release
           signer="$ANDROID_HOME/build-tools/36.0.0/apksigner"
-          "$signer" sign --ks "$key" --ks-key-alias androiddebugkey \
-            --ks-pass pass:android --key-pass pass:android \
-            --out release/EYEWITNESS-test.apk input/input.apk
-          "$signer" verify --verbose --print-certs release/EYEWITNESS-test.apk
+          "$signer" sign --ks "$key" --ks-key-alias "$alias" \
+            --ks-pass env:KS_PASS --key-pass env:KEY_PASS \
+            --out "release/$APP-$kind.apk" input/input.apk
+          "$signer" verify --verbose --print-certs "release/$APP-$kind.apk"
           cp input/THIRD-PARTY-NOTICES.zip input/BUILD-INFO.json release/
           cd release
-          sha256sum EYEWITNESS-test.apk THIRD-PARTY-NOTICES.zip BUILD-INFO.json > SHA256SUMS.txt
-      - name: Publish GitHub prerelease
+          sha256sum "$APP-$kind.apk" THIRD-PARTY-NOTICES.zip BUILD-INFO.json > SHA256SUMS.txt
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           COMMIT_SHA: ${{ github.sha }}
         run: |
-          tag="test-$GITHUB_RUN_NUMBER"
-          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
-          Автоматическая тестовая сборка. Только вымышленные сведения.
-          APK имеет applicationId с .test и постоянную тестовую подпись.
-          Сервер, версия и commit указаны в BUILD-INFO.json.
-          Тестовый стенд ограничен по IP; на телефоне используйте разрешённую сеть.
-          THIRD-PARTY-NOTICES.zip содержит состав зависимостей и лицензии.
-          Это не рабочий релиз для RuStore.
-          NOTES
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --target "$COMMIT_SHA" --prerelease \
-              --title "EYEWITNESS — тестовая сборка $GITHUB_RUN_NUMBER" \
-              --notes-file "$RUNNER_TEMP/release-notes.md"
+          if [[ "$BUILD_VARIANT" == release ]]; then
+            kind=release
+            title="$APP — release build $GITHUB_RUN_NUMBER"
+            notice="Android release APK. Deployment configuration is recorded in BUILD-INFO.json."
+          else
+            kind=test
+            title="$APP — test build $GITHUB_RUN_NUMBER"
+            notice="TEST APK (.test), synthetic data only. GitHub Release status does not change the Android build type."
           fi
-          gh release upload "$tag" release/EYEWITNESS-test.apk \
-            release/THIRD-PARTY-NOTICES.zip release/BUILD-INFO.json \
-            release/SHA256SUMS.txt --clobber
+          tag="$kind-$GITHUB_RUN_NUMBER"
+          printf '%s\n\n%s\n' "$notice" \
+            'Includes SHA256SUMS.txt, BUILD-INFO.json and THIRD-PARTY-NOTICES.zip.' > "$RUNNER_TEMP/release-notes.md"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "release/$APP-$kind.apk" \
+              release/THIRD-PARTY-NOTICES.zip release/BUILD-INFO.json release/SHA256SUMS.txt --clobber
+            gh release edit "$tag" --prerelease=false --latest
+          else
+            gh release create "$tag" --target "$COMMIT_SHA" --latest \
+              --title "$title" --notes-file "$RUNNER_TEMP/release-notes.md" \
+              "release/$APP-$kind.apk" release/THIRD-PARTY-NOTICES.zip \
+              release/BUILD-INFO.json release/SHA256SUMS.txt
+          fi

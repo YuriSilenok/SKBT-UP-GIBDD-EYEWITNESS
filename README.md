@@ -18,12 +18,16 @@ Firebase/Google Messaging, внешние карты/CDN и облачная г�
 
 Лицензии и состав зависимостей находятся в `third_party/` и доступны в интерфейсе. Полный перечень правок и ограничений: REQUIREMENTS.md, FIXES.md, LICENSES.md, TEST_RESULTS.md рядом с тремя репозиториями.
 
-## CI/CD: APK в GitHub Releases
+## Конфигурация сборки
 
-Workflow `.github/workflows/android-apk.yml` запускает unit tests, Android Lint, сборку APK и инвентаризацию зависимостей на push в main и pull request. Результаты проверок и сборки сохраняются в Actions Artifacts на 14 дней. Публикация выполняется только из main после успешных проверок: создаётся prerelease `test-N` с APK, SHA256SUMS.txt, BUILD-INFO.json и THIRD-PARTY-NOTICES.zip. Версия APK — `1.0-ci.N-test`, versionCode — 1000000 + N. Обычные рабочие release-сборки этот workflow не публикует.
+Адрес API хранится в `config/app.properties`. Для будущего боевого домена скопируйте `config/production.example.properties` в `config/local.properties` и замените значения. Параметры Gradle -P имеют приоритет. EYEWITNESS также использует privacyPolicyUrl, privacyConsentUrl, privacyRegulationUrl и consentVersion. Ссылки открываются в браузере; смена политики/согласия запрашивает согласие повторно. После изменения конфигурации нужно пересобрать APK.
 
-Ручной запуск: Actions → Android APK → Run workflow → main. Параметр publish=false запускает только проверки и сборку. Pull request не получает ключ подписи и не публикует релизы.
+## CI/CD: обычные GitHub Releases
 
-Настройки репозитория: Actions variable `API_BASE_URL` задаёт HTTPS API с завершающим `/` (сейчас https://xn--e1afhclgq.xn--p1ai:4443/). Secret `APK_TEST_KEYSTORE_BASE64` содержит Base64 существующего тестового debug.keystore; alias androiddebugkey, стандартные тестовые пароли android. Это только тестовый ключ; не используйте его для рабочего приложения. Ключ не хранится в Git и передаётся только отдельному заданию подписи; после использования временный файл удаляется. Отпечаток сертификата SHA-256: BB:58:C0:32:F1:63:DC:6A:53:52:9C:FD:38:89:F6:1B:3F:58:36:62:B4:3E:2C:14:63:28:3A:3F:16:E0:F1:65.
+Push main и pull request запускают unit tests, Android Lint, сборку и список зависимостей. Проверки и артефакты сохраняются на 14 дней. Публикация после успеха main создаёт обычный GitHub Release, без pre-release. В релиз входят APK, SHA256SUMS.txt, BUILD-INFO.json с фактически встроенной конфигурацией и THIRD-PARTY-NOTICES.zip.
 
-Все внешние Actions закреплены полными commit SHA. Gradle wrapper проверяется setup-gradle, архивы Gradle — distributionSha256Sum. Токен имеет contents:read для сборки и contents:write только в задании публикации. При переходе на рабочие APK нужны отдельный рабочий ключ, адрес API и процедура релизов.
+По умолчанию остаётся debug APK с .test и прежним тестовым ключом — текущий сервер только тестовый. Для настоящего Android release выберите build_variant=release при ручном запуске либо настройте Variable APK_BUILD_VARIANT=release. Нужны боевые URL в Variables и отдельные APK_RELEASE_* Secrets; при отсутствии рабочего ключа fallback на debug-ключ не выполняется. Обычный GitHub Release сам по себе не превращает тестовый APK в рабочий.
+
+Ручной запуск: Actions → Android APK → Run workflow → main. publish=false оставляет только сборку и проверки. Pull request не публикует APK и не получает ключ. APK_TEST_KEYSTORE_BASE64 сохраняет прежнюю подпись тестовых версий. Внешние Actions закреплены SHA; подпись выполняется отдельным заданием без запуска Gradle с ключом.
+
+Полная инструкция сервера, домена, документов и боевой подписи: [docs/PRODUCTION.md](docs/PRODUCTION.md). Там описаны все Variables/Secrets и конфигурация nginx/systemd из серверного репозитория.

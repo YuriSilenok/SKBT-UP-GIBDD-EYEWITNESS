@@ -1,8 +1,25 @@
 import java.net.URI
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
 }
+
+// Public build-time configuration. CLI -P overrides local and tracked files.
+val appConfig = Properties().apply {
+    rootProject.file("config/app.properties").reader(Charsets.UTF_8).use { load(it) }
+    rootProject.file("config/local.properties").takeIf { it.exists() }?.reader(Charsets.UTF_8)?.use { load(it) }
+}
+fun configured(name: String, fallback: String = ""): String =
+    providers.gradleProperty(name).orNull?.takeIf { it.isNotBlank() }
+        ?: appConfig.getProperty(name)?.takeIf { it.isNotBlank() } ?: fallback
+fun httpsUrl(name: String, value: String): String {
+    val parsed = URI(value)
+    require(parsed.scheme == "https" && parsed.host != null && parsed.userInfo == null) { "$name must be an HTTPS URL without credentials" }
+    return value
+}
+val configuredApi = httpsUrl("apiBaseUrl", configured("apiBaseUrl"))
+require(configuredApi.endsWith("/") && URI(configuredApi).rawQuery == null && URI(configuredApi).rawFragment == null) { "apiBaseUrl must end with / and have no query or fragment" }
 
 android {
     namespace = "com.example.gibddochevidets"
@@ -12,10 +29,18 @@ android {
 
     defaultConfig {
         manifestPlaceholders["appLabel"] = "@string/app_name"
-        val apiBaseUrl = providers.gradleProperty("apiBaseUrl").orElse("https://xn--e1afhclgq.xn--p1ai:4401/").get()
-        val parsed = URI(apiBaseUrl)
-        require(parsed.scheme == "https" && parsed.host != null && parsed.userInfo == null && apiBaseUrl.endsWith("/")) { "API base URL must be an HTTPS URL ending with /" }
-        buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
+        buildConfigField("String", "API_BASE_URL", "\"$configuredApi\"")
+        for ((key, field, path) in listOf(
+            Triple("privacyPolicyUrl", "PRIVACY_POLICY_URL", "policy"),
+            Triple("privacyConsentUrl", "PRIVACY_CONSENT_URL", "consent"),
+            Triple("privacyRegulationUrl", "PRIVACY_REGULATION_URL", "regulation")
+        )) {
+            val url = httpsUrl(key, configured(key, configuredApi + "legal/" + path))
+            buildConfigField("String", field, "\"$url\"")
+        }
+        val consentVersion = configured("consentVersion")
+        require(consentVersion.matches(Regex("[A-Za-z0-9._-]{1,64}"))) { "Invalid consentVersion" }
+        buildConfigField("String", "CONSENT_VERSION", "\"$consentVersion\"")
 
         applicationId = "com.example.gibddochevidets"
         minSdk = 26
