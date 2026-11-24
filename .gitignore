@@ -23,3 +23,7 @@ __pycache__/
 *.jks
 keystore.properties
 /ci-out/
+
+# Permanent production signing keystores (PKCS#12).
+*.p12
+*.pfx
