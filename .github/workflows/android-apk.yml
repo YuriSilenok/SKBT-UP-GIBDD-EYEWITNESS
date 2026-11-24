@@ -35,6 +35,10 @@ env:
 
 jobs:
   build:
+    outputs:
+      version_name: ${{ steps.version.outputs.version_name }}
+      version_code: ${{ steps.version.outputs.version_code }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -48,6 +52,11 @@ jobs:
       - uses: gradle/actions/setup-gradle@4c125117fe7c5aed11272ec4213f602f012f89f2 # v5
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+      - name: Allocate consecutive published version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/next-version.py
       - name: Install Android SDK
         uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
         with:
@@ -73,8 +82,8 @@ jobs:
             "-PprivacyConsentUrl=$PRIVACY_CONSENT_URL" \
             "-PprivacyRegulationUrl=$PRIVACY_REGULATION_URL" \
             "-PconsentVersion=$CONSENT_VERSION" \
-            "-PciVersionCode=$((1000000 + GITHUB_RUN_NUMBER))" \
-            "-PciVersionName=1.0-ci.$GITHUB_RUN_NUMBER"
+            "-PciVersionCode=$CI_VERSION_CODE" \
+            "-PciVersionName=$CI_VERSION_NAME"
       - name: Package build inputs and notices
         run: python3 .github/scripts/package-build.py
       - name: Save APK build inputs
@@ -155,23 +164,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           COMMIT_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
+          PUBLISH_VERSION: ${{ needs.build.outputs.version_name }}
         run: |
           if [[ "$BUILD_VARIANT" == release ]]; then
             kind=release
-            title="$APP — release build $GITHUB_RUN_NUMBER"
+            title="$APP $PUBLISH_VERSION"
             notice="Android release APK. Deployment configuration is recorded in BUILD-INFO.json."
           else
             kind=test
-            title="$APP — test build $GITHUB_RUN_NUMBER"
+            title="$APP $PUBLISH_VERSION — test"
             notice="TEST APK (.test), synthetic data only. GitHub Release status does not change the Android build type."
           fi
-          tag="$kind-$GITHUB_RUN_NUMBER"
+          tag="$RELEASE_TAG"
+          if tag_sha=$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha 2>/dev/null); then
+            [[ "$tag_sha" == "$COMMIT_SHA" ]] || { echo "Tag $tag points to another commit"; exit 1; }
+          fi
           printf '%s\n\n%s\n' "$notice" \
             'Includes SHA256SUMS.txt, BUILD-INFO.json and THIRD-PARTY-NOTICES.zip.' > "$RUNNER_TEMP/release-notes.md"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "release/$APP-$kind.apk" \
               release/THIRD-PARTY-NOTICES.zip release/BUILD-INFO.json release/SHA256SUMS.txt --clobber
-            gh release edit "$tag" --prerelease=false --latest
+            gh release edit "$tag" --target "$COMMIT_SHA" --draft=false --prerelease=false --latest
           else
             gh release create "$tag" --target "$COMMIT_SHA" --latest \
               --title "$title" --notes-file "$RUNNER_TEMP/release-notes.md" \
