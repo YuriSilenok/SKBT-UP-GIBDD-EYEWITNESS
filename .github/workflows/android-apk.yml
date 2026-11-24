@@ -14,8 +14,8 @@ on:
       build_variant:
         description: Android build type (release requires production configuration and signing secrets)
         type: choice
-        options: [debug, release]
-        default: debug
+        options: [release, debug]
+        default: release
 
 permissions:
   contents: read
@@ -26,7 +26,7 @@ concurrency:
 
 env:
   APP: EYEWITNESS
-  BUILD_VARIANT: ${{ inputs.build_variant || vars.APK_BUILD_VARIANT || 'debug' }}
+  BUILD_VARIANT: ${{ inputs.build_variant || vars.APK_BUILD_VARIANT || 'release' }}
   API_BASE_URL: ${{ vars.API_BASE_URL }}
   PRIVACY_POLICY_URL: ${{ vars.PRIVACY_POLICY_URL }}
   PRIVACY_CONSENT_URL: ${{ vars.PRIVACY_CONSENT_URL }}
@@ -106,7 +106,7 @@ jobs:
 
   publish:
     needs: build
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    if: github.ref == 'refs/heads/main' && (inputs.build_variant || vars.APK_BUILD_VARIANT || 'release') == 'release' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -127,25 +127,19 @@ jobs:
           log-accepted-android-sdk-licenses: false
       - name: Sign APK
         env:
-          KEYSTORE_BASE64: ${{ secrets[env.BUILD_VARIANT == 'release' && 'APK_RELEASE_KEYSTORE_BASE64' || 'APK_TEST_KEYSTORE_BASE64'] }}
+          KEYSTORE_BASE64: ${{ secrets.APK_RELEASE_KEYSTORE_BASE64 }}
           RELEASE_STORE_PASSWORD: ${{ secrets.APK_RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_PASSWORD: ${{ secrets.APK_RELEASE_KEY_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.APK_RELEASE_KEY_ALIAS }}
         run: |
           set -euo pipefail
           : "${KEYSTORE_BASE64:?Set the signing keystore secret for this build type}"
-          if [[ "$BUILD_VARIANT" == release ]]; then
-            : "${RELEASE_STORE_PASSWORD:?Missing production store password}"
-            : "${RELEASE_KEY_PASSWORD:?Missing production key password}"
-            : "${RELEASE_KEY_ALIAS:?Missing production key alias}"
-            export KS_PASS="$RELEASE_STORE_PASSWORD" KEY_PASS="$RELEASE_KEY_PASSWORD"
-            alias="$RELEASE_KEY_ALIAS"
-            kind=release
-          else
-            export KS_PASS=android KEY_PASS=android
-            alias=androiddebugkey
-            kind=test
-          fi
+          : "${RELEASE_STORE_PASSWORD:?Missing production store password}"
+          : "${RELEASE_KEY_PASSWORD:?Missing production key password}"
+          : "${RELEASE_KEY_ALIAS:?Missing production key alias}"
+          export KS_PASS="$RELEASE_STORE_PASSWORD" KEY_PASS="$RELEASE_KEY_PASSWORD"
+          alias="$RELEASE_KEY_ALIAS"
+          kind=release
           key="$RUNNER_TEMP/apk-signing.keystore"
           trap 'rm -f "$key"' EXIT
           umask 077
@@ -167,15 +161,9 @@ jobs:
           RELEASE_TAG: ${{ needs.build.outputs.release_tag }}
           PUBLISH_VERSION: ${{ needs.build.outputs.version_name }}
         run: |
-          if [[ "$BUILD_VARIANT" == release ]]; then
-            kind=release
-            title="$APP $PUBLISH_VERSION"
-            notice="Android release APK. Deployment configuration is recorded in BUILD-INFO.json."
-          else
-            kind=test
-            title="$APP $PUBLISH_VERSION — test"
-            notice="TEST APK (.test), synthetic data only. GitHub Release status does not change the Android build type."
-          fi
+          kind=release
+          title="$APP $PUBLISH_VERSION"
+          notice="Production Android release. Domain and document links are recorded in BUILD-INFO.json."
           tag="$RELEASE_TAG"
           if tag_sha=$(gh api "repos/$GH_REPO/commits/$tag" --jq .sha 2>/dev/null); then
             [[ "$tag_sha" == "$COMMIT_SHA" ]] || { echo "Tag $tag points to another commit"; exit 1; }
