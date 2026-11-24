@@ -26,9 +26,9 @@ Firebase/Google Messaging, внешние карты/CDN и облачная г�
 
 Push main и pull request запускают unit tests, Android Lint, сборку и список зависимостей. Проверки и артефакты сохраняются на 14 дней. Публикация после успеха main создаёт обычный GitHub Release, без pre-release. В релиз входят APK, SHA256SUMS.txt, BUILD-INFO.json с фактически встроенной конфигурацией и THIRD-PARTY-NOTICES.zip.
 
-По умолчанию остаётся debug APK с .test и прежним тестовым ключом — текущий сервер только тестовый. Для настоящего Android release выберите build_variant=release при ручном запуске либо настройте Variable APK_BUILD_VARIANT=release. Нужны боевые URL в Variables и отдельные APK_RELEASE_* Secrets; при отсутствии рабочего ключа fallback на debug-ключ не выполняется. Обычный GitHub Release сам по себе не превращает тестовый APK в рабочий.
+По умолчанию собирается production Android release для силенок.рф: без .test, с постоянным рабочим ключом APK_RELEASE_*. При отсутствии рабочего ключа публикация прекращается, fallback на debug-ключ не выполняется. Debug доступен только как диагностический артефакт ручного запуска и не публикуется в Releases.
 
-Ручной запуск: Actions → Android APK → Run workflow → main. publish=false оставляет только сборку и проверки. Pull request не публикует APK и не получает ключ. APK_TEST_KEYSTORE_BASE64 сохраняет прежнюю подпись тестовых версий. Внешние Actions закреплены SHA; подпись выполняется отдельным заданием без запуска Gradle с ключом.
+Ручной запуск: Actions → Android APK → Run workflow → main. publish=false оставляет только сборку и проверки. Pull request не публикует APK и не получает ключ. APK_RELEASE_* содержат постоянный рабочий ключ; прежний APK_TEST_KEYSTORE_BASE64 не используется для публикации production. Внешние Actions закреплены SHA; подпись выполняется отдельным заданием без запуска Gradle с ключом.
 
 Полная инструкция сервера, домена, документов и боевой подписи: [docs/PRODUCTION.md](docs/PRODUCTION.md). Там описаны все Variables/Secrets и конфигурация nginx/systemd из серверного репозитория.
 
